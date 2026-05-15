@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.0](https://github.com/atomicgravity/postern/compare/v0.15.3...v1.0.0) (2026-05-15)
+
+
+### Miscellaneous
+
+* release 1.0.0 ([956a897](https://github.com/atomicgravity/postern/commit/956a897d08d335449c61e7111edb02bfd8462ede))
+
 ## [0.15.3](https://github.com/atomicgravity/postern/compare/v0.15.2...v0.15.3) (2026-05-15)
 
 

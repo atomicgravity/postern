@@ -14,7 +14,7 @@ locals {
   # via the module_version output so consumers can drift-check their
   # `?ref=` against what the module actually is — when those drift,
   # the consumer's precondition catches the mismatch at plan time.
-  module_version = "0.15.3" # x-release-please-version
+  module_version = "1.0.0" # x-release-please-version
 
   registry_table_name  = "${var.name_prefix}-registry"
   ratelimit_table_name = "${var.name_prefix}-ratelimit"
