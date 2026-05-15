@@ -1,0 +1,89 @@
+# Custom domain (recommended). When set, the broker is reachable at
+# https://<broker_domain_name> with TLS terminated at API Gateway by an
+# ACM-issued cert validated against the named Route 53 zone.
+# Leave both empty to use the AWS-generated execute-api URL instead.
+route53_zone_name  = "example.com"
+broker_domain_name = "broker.example.com"
+
+# IdP wiring. With examples/terraform/cognito as the IdP:
+#   idp_issuer       <- cognito output `issuer`
+#   idp_audience     <- the broker_url output of this stack (= https://broker.example.com)
+# Set the cognito sample's broker_url and broker_resource to the same value.
+idp_issuer   = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_REPLACE"
+idp_audience = "https://broker.example.com"
+
+# AVP identity source. With examples/terraform/cognito:
+#   avp_cognito_user_pool_arn -> arn from cognito output `user_pool_id` rendered as ARN
+#   avp_cognito_client_ids    -> [cognito output `user_pool_client_id`]
+avp_cognito_user_pool_arn = "arn:aws:cognito-idp:us-west-2:111122223333:userpool/us-west-2_REPLACE"
+avp_cognito_client_ids    = ["REPLACE_CLI_CLIENT_ID"]
+
+# Registry backend. "dynamodb" (default) provisions the device-registry table;
+# "http" wires the broker to an external HTTP registry service and skips the
+# table. Uncomment one of the alt blocks to switch:
+#
+# Plain HTTP (trusted-network deploy):
+# registry_backend  = "http"
+# registry_http_url = "https://inventory.example.com/postern/lookup"
+#
+# HTTP with bearer token (set the token via TF_VAR_registry_http_bearer_token):
+# registry_backend           = "http"
+# registry_http_url          = "https://inventory.example.com/postern/lookup"
+# registry_http_auth_mode    = "bearer"
+# registry_http_bearer_token = ""  # populated via env
+#
+# HTTP via API Gateway with AWS SigV4 (broker signs with its Lambda IAM role):
+# registry_backend         = "http"
+# registry_http_url        = "https://abc123.execute-api.us-west-2.amazonaws.com/prod/lookup"
+# registry_http_auth_mode  = "aws_sigv4"
+# registry_http_aws_region = "us-west-2"
+# # The Lambda role needs execute-api:Invoke on the target API; attach in the
+# # caller via aws_iam_role_policy referencing module.<name>.broker_lambda_role_name.
+
+# AVP policy + schema customization.
+#
+# Set avp_install_starter_policy = false to skip the bundled permissive starter
+# policy ("any authenticated user can mint") and manage the full Cedar policy
+# set yourself via aws_verifiedpermissions_policy resources in your stack.
+# avp_install_starter_policy = true
+#
+# Override the bundled Cedar schema when your policies need to reference
+# additional Device attributes (extra String, Boolean, or Long fields the
+# Registry emits). Pass the JSON either inline via heredoc or read from a file
+# next to your tfvars (`file("${path.module}/cedar/schema.json")` etc.).
+# avp_schema_json = <<-EOT
+# {
+#   "Postern": {
+#     "entityTypes": { "User": {...}, "Device": {...} },
+#     "actions": { "MintOperatorCert": {...} }
+#   }
+# }
+# EOT
+
+# API Gateway access logging (default on). APIGW writes one JSON line per
+# request to /<name_prefix>/apigw-access. Independent of the JWT authorizer
+# below.
+# apigw_access_logs_enabled       = true
+# apigw_access_log_retention_days = 30
+
+# API Gateway JWT authorizer (optional layered defense). When enabled,
+# APIGW validates the access token's signature, issuer, expiration, and
+# (when idp_audience is set) audience before invoking Lambda. Bad-token
+# probes get a 401 from APIGW and never reach the broker — defense-in-
+# depth against parser-side CVEs and cold-start amplification. The broker
+# still does its full check; APIGW is a pre-filter, not the authority.
+# See terraform/postern-broker/README.md §"Layered JWT defense at API
+# Gateway" for the full trust model.
+# apigw_jwt_authorizer_enabled    = true
+
+# Optional tunables — all have sensible defaults. Uncomment to override.
+# name_prefix              = "postern"
+# cert_ttl_operator        = "12h"
+# ratelimit_limit          = 60
+# ratelimit_window         = "1m"
+# trusted_proxies          = []
+# log_level                = "info"
+# lambda_memory_mb         = 512
+# lambda_timeout_seconds   = 30
+# lambda_log_retention_days = 30
+# audit_log_retention_days  = 365

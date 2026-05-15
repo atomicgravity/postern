@@ -1,0 +1,35 @@
+# Build output
+/bin/
+/dist/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Test / coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Terraform local state / providers
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Python cache
+__pycache__/
+.mypy_cache/
+*.py[cod]
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

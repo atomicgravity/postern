@@ -1,0 +1,76 @@
+name: release
+
+# Single workflow for the entire release pipeline:
+#
+#   1. push to main → release-please job maintains the release PR;
+#      when the PR merges and release-please cuts the tag, the
+#      goreleaser job chains off it and publishes binaries.
+#
+#   2. workflow_dispatch → skips release-please entirely, runs only
+#      goreleaser against the supplied tag. Used to backfill
+#      artifacts onto an existing source-only release.
+#
+# Both paths converge on the same goreleaser job — no duplication.
+# .goreleaser.yaml's `release.mode: append` means goreleaser uploads
+# artifacts to an existing GitHub Release (release-please-action
+# creates one source-only when it merges the PR) rather than
+# erroring on conflict.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build artifacts for, e.g. v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write          # release-please commits + tags; goreleaser uploads
+  pull-requests: write     # release-please opens + updates the release PR
+  id-token: write          # cosign keyless signing via OIDC
+  packages: write          # reserved for future docker pushes
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  goreleaser:
+    needs: release-please
+    # Run when release-please cut a new release on push, OR when this
+    # workflow was manually dispatched. `always()` lets goreleaser proceed
+    # even when release-please was skipped (workflow_dispatch case).
+    if: |
+      always() && (
+        needs.release-please.outputs.release_created == 'true' ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || needs.release-please.outputs.tag_name }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

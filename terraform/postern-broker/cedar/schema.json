@@ -1,0 +1,104 @@
+{
+  "Postern": {
+    "entityTypes": {
+      "User": {
+        "shape": {
+          "type": "Record",
+          "attributes": {}
+        }
+      },
+      "Device": {
+        "shape": {
+          "type": "Record",
+          "attributes": {
+            "serial": {
+              "type": "String"
+            },
+            "friendly_id": {
+              "type": "String",
+              "required": false
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "MintOperatorCert": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Device"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "source_ip": {
+                "type": "String"
+              },
+              "user_agent": {
+                "type": "String"
+              },
+              "request_id": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String",
+                "required": false
+              }
+            }
+          }
+        }
+      },
+      "MintTimefixCert": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Device"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "source_ip": {
+                "type": "String"
+              },
+              "user_agent": {
+                "type": "String"
+              },
+              "request_id": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String",
+                "required": false
+              }
+            }
+          }
+        }
+      },
+      "OpenTunnel": {
+        "appliesTo": {
+          "principalTypes": ["User"],
+          "resourceTypes": ["Device"],
+          "context": {
+            "type": "Record",
+            "attributes": {
+              "source_ip": {
+                "type": "String"
+              },
+              "user_agent": {
+                "type": "String"
+              },
+              "request_id": {
+                "type": "String"
+              },
+              "timestamp": {
+                "type": "String",
+                "required": false
+              },
+              "requested_max_lifetime_minutes": {
+                "type": "Long",
+                "required": false
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

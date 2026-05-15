@@ -1,0 +1,65 @@
+name: test
+
+# Runs on PRs and main pushes. Go test/vet/fmt/tidy via `make check`, plus
+# Terraform formatting + validation against the module and the in-repo
+# example consumer. Windows is intentionally skipped — Postern's Windows
+# surface is exec-mode-only and the test suite has POSIX file-mode
+# assertions that the package itself gates on runtime.GOOS != "windows".
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-flight runs of the same branch / PR when a new push comes in.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - name: make check
+        run: make check
+
+  terraform:
+    name: terraform (validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ">=1.9.0"
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive terraform/ examples/terraform/
+      - name: terraform init + validate (module)
+        working-directory: terraform/postern-broker
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform init + validate (deployment example)
+        working-directory: examples/terraform/deployment
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: terraform init + validate (cognito example)
+        working-directory: examples/terraform/cognito
+        run: |
+          terraform init -backend=false
+          terraform validate

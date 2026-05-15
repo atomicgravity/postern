@@ -1,0 +1,194 @@
+# GoReleaser config — builds Postern's binaries across the supported platform
+# matrix and publishes a GitHub Release on tag push. Triggered by the
+# `release` workflow; manual `goreleaser release` runs are not the supported
+# path.
+#
+# The broker-lambda archive is the load-bearing one: AWS Lambda's provided.al2023
+# runtime expects a flat zip whose entrypoint is named exactly `bootstrap` at
+# the zip root. The `terraform/postern-broker/` module accepts a URL or path
+# pointing at this zip via the `broker_lambda_zip_path` variable, so the
+# release artifact name and shape are part of the operator-facing contract.
+
+version: 2
+
+project_name: postern
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: postern
+    main: ./cmd/postern
+    binary: postern
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/atomicgravity/postern/internal/version.Version={{ .Version }}
+      - -X github.com/atomicgravity/postern/internal/version.Commit={{ .Commit }}
+      - -X github.com/atomicgravity/postern/internal/version.Date={{ .Date }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+  - id: broker
+    main: ./cmd/broker
+    binary: broker
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/atomicgravity/postern/internal/version.Version={{ .Version }}
+      - -X github.com/atomicgravity/postern/internal/version.Commit={{ .Commit }}
+      - -X github.com/atomicgravity/postern/internal/version.Date={{ .Date }}
+    goos: [linux]
+    goarch: [amd64, arm64]
+
+  - id: broker-lambda
+    main: ./cmd/broker-lambda
+    # Lambda's provided.al2023 runtime entrypoint MUST be named `bootstrap`.
+    binary: bootstrap
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/atomicgravity/postern/internal/version.Version={{ .Version }}
+      - -X github.com/atomicgravity/postern/internal/version.Commit={{ .Commit }}
+      - -X github.com/atomicgravity/postern/internal/version.Date={{ .Date }}
+    goos: [linux]
+    goarch: [arm64]
+
+  # On-device pair: the unprivileged verifier and the cap_sys_time-bearing
+  # setter. Linux-only — the syscall surface (clock_settime + RTC ioctl)
+  # is Linux-specific. Devices ship the matching pair for their arch from
+  # the same release, installed per the on-device packaging sample.
+  - id: timefix-apply
+    main: ./cmd/timefix-apply
+    binary: timefix-apply
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux]
+    goarch: [amd64, arm64]
+
+  - id: timefix-set-clock
+    main: ./cmd/timefix-set-clock
+    binary: timefix-set-clock
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: postern
+    ids: [postern]
+    name_template: "postern_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: ["tar.gz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    files:
+      - LICENSE*
+      - README.md
+
+  - id: broker
+    ids: [broker]
+    name_template: "broker_{{ .Version }}_linux_{{ .Arch }}"
+    formats: ["tar.gz"]
+    files:
+      - LICENSE*
+      - README.md
+
+  - id: broker-lambda
+    ids: [broker-lambda]
+    name_template: "broker-lambda_{{ .Version }}_linux_arm64"
+    formats: ["zip"]
+    # Flat zip with just the bootstrap binary — that's what Lambda's runtime
+    # expects. No LICENSE/README at the root; those live in the source archive.
+    wrap_in_directory: false
+    files: []
+
+  # postern-timefix-on-device groups the two on-device binaries into a
+  # single per-arch archive. Operators drop both onto the device at
+  # /usr/sbin/ per the install recipe at examples/on-device/timefix/.
+  - id: postern-timefix-on-device
+    ids: [timefix-apply, timefix-set-clock]
+    name_template: "postern-timefix-on-device_{{ .Version }}_linux_{{ .Arch }}"
+    formats: ["tar.gz"]
+    files:
+      - LICENSE*
+      - README.md
+      - src: examples/on-device/timefix/README.md
+        dst: INSTALL.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# Cosign keyless signing on the checksums file. GitHub Actions provides an
+# OIDC token; cosign uses it to obtain a short-lived signing cert from
+# Fulcio (Sigstore's CA) and writes the signature + cert + rekor entry as a
+# single Sigstore bundle (cosign v3+ default; the older split
+# --output-signature / --output-certificate flags were deprecated).
+# Verifiers run:
+#   cosign verify-blob --bundle=checksums.txt.sigstore \
+#     --certificate-identity-regexp='https://github\.com/atomicgravity/postern/' \
+#     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+#     checksums.txt
+#
+# Verifying the checksums file is sufficient — every binary's hash is in
+# that file, so a verified checksums.txt transitively authenticates the rest.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore"
+    args:
+      - "sign-blob"
+      - "--bundle"
+      - "${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# release-please owns the user-facing CHANGELOG.md; GoReleaser's auto-generated
+# release notes act as a supplementary "what's in this build" view. The
+# author-grouped sections below are cosmetic for the GitHub Release page.
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 10
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: atomicgravity
+    name: postern
+  prerelease: auto
+  # release-please-action creates the GitHub Release (source-only) when it
+  # merges its release PR. The chained goreleaser job in release-please.yml
+  # then runs against the same tag and uploads binaries to that existing
+  # release. `mode: append` makes goreleaser add artifacts to an existing
+  # release rather than erroring on conflict.
+  mode: append

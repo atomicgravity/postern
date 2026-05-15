@@ -1,0 +1,46 @@
+# Minimal terraform.tfvars for the postern-broker example.
+# Copy to terraform.tfvars and fill in the operator-specific values.
+
+aws_region  = "us-west-2"
+name_prefix = "postern"
+
+tags = {
+  Project = "postern"
+  Env     = "prod"
+  Owner   = "platform-eng"
+}
+
+# --- IdP wiring ---------------------------------------------------------------
+# The broker validates access tokens against this OIDC issuer. Set at least
+# one of idp_audience or idp_required_scope.
+
+idp_issuer   = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX"
+idp_audience = "https://postern-broker.example.com"
+
+# --- AVP identity source ------------------------------------------------------
+# avp_identity_source_type is "cognito" or "oidc".
+#
+# Cognito example:
+avp_identity_source_type  = "cognito"
+avp_cognito_user_pool_arn = "arn:aws:cognito-idp:us-west-2:123456789012:userpool/us-west-2_XXXXXXXXX"
+avp_cognito_client_ids    = ["abc123clientid"]
+#
+# OIDC example (non-Cognito):
+# avp_identity_source_type    = "oidc"
+# avp_oidc_issuer             = "https://idp.example.com/"
+# avp_oidc_audiences          = ["https://postern-broker.example.com"]
+# avp_oidc_principal_id_claim = "sub"
+
+# --- Custom domain (optional) -------------------------------------------------
+# Leave broker_domain_name empty to skip Route 53 / ACM and use the API
+# Gateway invoke URL directly.
+
+# route53_zone_name  = "example.com"
+# broker_domain_name = "postern-broker.example.com"
+
+# --- Lambda packaging ---------------------------------------------------------
+# Leave empty to build at apply time (requires make / go / zip locally and
+# assumes you're applying from inside the Postern repo). For CI deploys with
+# a separately-built artifact, set the absolute path:
+#
+# broker_lambda_zip_path = "/abs/path/to/broker-lambda.zip"

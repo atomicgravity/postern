@@ -1,0 +1,68 @@
+// V3 AWS IoT Secure Tunneling wire schema. Vendored from the V3
+// WebSocket Protocol Guide so the source proxy can decode/encode frames
+// independently of any third-party reference implementation.
+//
+// One Message type carries every wire frame; the discriminated Type
+// enum identifies which fields are meaningful per frame kind. Field
+// numbers are AWS-defined and must not change.
+syntax = "proto3";
+
+package securetunnel.v3;
+
+option go_package = "github.com/atomicgravity/postern/internal/securetunnel/proto;securetunnelpb";
+
+// Message is the single envelope the V3 subprotocol carries. It is
+// length-prefixed (2-byte big-endian) on the wire ahead of the encoded
+// protobuf bytes; the WebSocket binary-frame boundary is independent of
+// the length-prefixed envelope (one WebSocket frame can carry zero, one,
+// or several envelopes; an envelope can span WebSocket frames).
+message Message {
+  // Type is the frame kind. See the Type enum for valid values.
+  Type type = 1;
+
+  // StreamId disambiguates concurrent streams within a service. Source
+  // assigns a fresh non-zero value when initiating a stream via
+  // STREAM_START; subsequent DATA / STREAM_RESET frames carry the same
+  // value.
+  int32 streamId = 2;
+
+  // Ignorable lets a peer mark a frame as discardable if the receiver
+  // does not understand it. The source proxy in v1 ignores this flag
+  // when sending (sets false on outgoing frames) and respects it on
+  // incoming frames (unknown frame kinds with ignorable=true are
+  // dropped silently rather than terminating the session).
+  bool ignorable = 3;
+
+  // Payload is the data byte slice for DATA frames. Empty for control
+  // frames.
+  bytes payload = 4;
+
+  // ServiceId names the destination service this frame targets. v1
+  // single-service tunnels populate this with "SSH" on outgoing frames
+  // and validate the value on incoming frames.
+  string serviceId = 5;
+
+  // AvailableServiceIds is the destination's published list of
+  // service-ids on the SERVICE_IDS frame emitted on connection. The
+  // source validates this list contains the expected service-id.
+  repeated string availableServiceIds = 6;
+
+  // ConnectionId disambiguates concurrent connections within a single
+  // stream. v1 ships single-connection-per-stream so this is left at
+  // its zero value (the protocol treats absent connectionId as
+  // connectionId=1 per the V3 guide).
+  int32 connectionId = 7;
+}
+
+// Type discriminates the frame kind. Values are AWS-defined; do not
+// reorder.
+enum Type {
+  UNKNOWN = 0;
+  DATA = 1;
+  STREAM_START = 2;
+  STREAM_RESET = 3;
+  SESSION_RESET = 4;
+  SERVICE_IDS = 5;
+  CONNECTION_START = 6;
+  CONNECTION_RESET = 7;
+}
