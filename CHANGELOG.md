@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.1](https://github.com/atomicgravity/postern/compare/v1.0.0...v1.0.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **broker:** make operator cert behave like a normal key ([e6d6245](https://github.com/atomicgravity/postern/commit/e6d6245c165e1bf7ed763c22758e9591c8ef98c0))
+
+
+### Documentation
+
+* remove old docs ([dc3b0c9](https://github.com/atomicgravity/postern/commit/dc3b0c9b6942e93b1086505f518dd2b2279151e2))
+
 ## [1.0.0](https://github.com/atomicgravity/postern/compare/v0.15.3...v1.0.0) (2026-05-15)
 
 
