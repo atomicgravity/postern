@@ -251,7 +251,13 @@ func (i *SSHCertIssuer) RecordSSHCertHandlerDenial(ctx context.Context, denial H
 
 // buildOperatorCert produces the engineer-SSH cert: principal
 // "device-<serial>-operator", engineer-clock-derived validity window with
-// skew padding, permit-pty.
+// skew padding, and the full default extension set so the cert behaves like a
+// normal key rather than a restricted one. The five extensions are exactly
+// what ssh-keygen stamps on a cert by default — pty, port/agent/X11
+// forwarding, and user-rc. Authorization lives in the broker Policy and the
+// short validity window, not in clamping the engineer's interactive surface
+// once access is granted. The timefix cert (buildTimefixCert) is the opposite:
+// it denies all of these because it grants nothing beyond a forced command.
 func buildOperatorCert(engineerCtx engineerContext, deviceCtx deviceContext, publicKey ssh.PublicKey, validAfter, validBefore time.Time) *ssh.Certificate {
 	return &ssh.Certificate{
 		Key:             publicKey,
@@ -263,7 +269,13 @@ func buildOperatorCert(engineerCtx engineerContext, deviceCtx deviceContext, pub
 		ValidBefore:     uint64(validBefore.Unix()),
 		Permissions: ssh.Permissions{
 			CriticalOptions: map[string]string{},
-			Extensions:      map[string]string{"permit-pty": ""},
+			Extensions: map[string]string{
+				"permit-X11-forwarding":   "",
+				"permit-agent-forwarding": "",
+				"permit-port-forwarding":  "",
+				"permit-pty":              "",
+				"permit-user-rc":          "",
+			},
 		},
 	}
 }

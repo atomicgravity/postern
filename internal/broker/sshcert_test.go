@@ -64,8 +64,20 @@ func TestSSHCertIssuerIssuesOperatorCert(t *testing.T) {
 	if got, want := cert.KeyId, "engineer_sub:sub-123;engineer_email:engineer@example.com;jti:01969cc1-2800-7000-8000-000000000001"; got != want {
 		t.Fatalf("key id = %q, want %q", got, want)
 	}
-	if _, ok := cert.Extensions["permit-pty"]; !ok || len(cert.Extensions) != 1 {
-		t.Fatalf("extensions = %#v, want permit-pty only", cert.Extensions)
+	wantExtensions := []string{
+		"permit-X11-forwarding",
+		"permit-agent-forwarding",
+		"permit-port-forwarding",
+		"permit-pty",
+		"permit-user-rc",
+	}
+	for _, ext := range wantExtensions {
+		if _, ok := cert.Extensions[ext]; !ok {
+			t.Fatalf("extensions = %#v, want %q present", cert.Extensions, ext)
+		}
+	}
+	if len(cert.Extensions) != len(wantExtensions) {
+		t.Fatalf("extensions = %#v, want exactly the %d default extensions", cert.Extensions, len(wantExtensions))
 	}
 	if got, want := cert.ValidAfter, uint64(1746996400); got != want {
 		t.Fatalf("valid after = %d, want %d", got, want)

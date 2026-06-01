@@ -145,7 +145,7 @@ One CA, three roles, one private key in the Signer.
 | Principal | `device-{serial}-operator` |
 | ValidAfter | issuance time − 1 hour (clock skew tolerance) |
 | ValidBefore | issuance time + 12 hours |
-| Cert extensions | `permit-pty`, `permit-port-forwarding` — sshd constrains forwarding to local forwarding; no agent-forwarding, no X11 |
+| Cert extensions | `permit-pty`, `permit-port-forwarding`, `permit-agent-forwarding`, `permit-X11-forwarding`, `permit-user-rc` — the full default set ssh-keygen stamps on a cert, so the operator cert behaves like a normal key. Authorization is enforced by the broker Policy and the short validity window, not by clamping the engineer's interactive surface after access is granted. Devices that want to constrain forwarding do so in sshd config. |
 | Critical options | none |
 | Key ID (audit) | `engineer_sub:<idp-sub>;engineer_email:<email>;jti:<broker-issued-uuid>` |
 
