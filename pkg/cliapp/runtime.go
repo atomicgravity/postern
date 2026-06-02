@@ -42,7 +42,16 @@ type runtime struct {
 	openSSHConfWriter  openSSHConfWriterFunc
 }
 
-type loginRunnerFunc func(context.Context, ResolvedProfile, io.Writer) error
+type loginRunnerFunc func(context.Context, ResolvedProfile, io.Writer, loginOptions) error
+
+// loginOptions carries the login subcommand's flags through the runner
+// seam. CallbackPort of 0 means "try the full registered port set in
+// order"; a non-zero value pins a single port (validated against the
+// registered set before it reaches here).
+type loginOptions struct {
+	NoBrowser    bool
+	CallbackPort int
+}
 
 type accessTokenFunc func(context.Context, ResolvedProfile) (string, error)
 

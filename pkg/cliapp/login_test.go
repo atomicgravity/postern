@@ -22,7 +22,7 @@ default:
 `)
 	var gotProfile ResolvedProfile
 	rt := newRuntimeForTest(Options{ConfigPath: configPath, LookupEnv: emptyEnv})
-	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer) error {
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, _ loginOptions) error {
 		gotProfile = profile
 		return nil
 	}
@@ -72,7 +72,7 @@ func TestLoginUsesInjectedProfileResolver(t *testing.T) {
 			},
 		}, nil
 	}
-	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer) error {
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, _ loginOptions) error {
 		loginCalls++
 		if profile.Name != "wrapped" {
 			t.Fatalf("login profile = %q, want wrapped", profile.Name)
@@ -103,7 +103,7 @@ staging:
 `)
 	var gotProfile string
 	rt := newRuntimeForTest(Options{ConfigPath: configPath, LookupEnv: emptyEnv})
-	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer) error {
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, _ loginOptions) error {
 		gotProfile = profile.Name
 		return nil
 	}
@@ -123,7 +123,7 @@ func TestLoginWritesDisplayName(t *testing.T) {
 	rt.profileResolver = func(cmd *cobra.Command) (ResolvedProfile, error) {
 		return ResolvedProfile{Name: "default"}, nil
 	}
-	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer) error {
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, _ loginOptions) error {
 		_, err := output.Write([]byte("Logged in as engineer@example.com\n"))
 		return err
 	}
@@ -134,6 +134,53 @@ func TestLoginWritesDisplayName(t *testing.T) {
 	}
 	if got, want := stdout.String(), "Logged in as engineer@example.com\n"; got != want {
 		t.Fatalf("login output = %q, want %q", got, want)
+	}
+}
+
+func TestLoginThreadsNoBrowserAndCallbackPort(t *testing.T) {
+	var gotOpts loginOptions
+	rt := newRuntimeForTest(Options{})
+	rt.profileResolver = func(cmd *cobra.Command) (ResolvedProfile, error) {
+		return ResolvedProfile{Name: "default"}, nil
+	}
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, opts loginOptions) error {
+		gotOpts = opts
+		return nil
+	}
+	root := rootWithLoginForTest(rt, nil)
+
+	if err := execute(context.Background(), root, "login", "--no-browser", "--callback-port", "50003"); err != nil {
+		t.Fatalf("Run(login) error = %v", err)
+	}
+	if !gotOpts.NoBrowser {
+		t.Fatal("login NoBrowser = false, want true")
+	}
+	if got, want := gotOpts.CallbackPort, 50003; got != want {
+		t.Fatalf("login CallbackPort = %d, want %d", got, want)
+	}
+}
+
+func TestLoginRejectsCallbackPortOutsideRange(t *testing.T) {
+	loginCalls := 0
+	rt := newRuntimeForTest(Options{})
+	rt.profileResolver = func(cmd *cobra.Command) (ResolvedProfile, error) {
+		return ResolvedProfile{Name: "default"}, nil
+	}
+	rt.loginRunner = func(ctx context.Context, profile ResolvedProfile, output io.Writer, _ loginOptions) error {
+		loginCalls++
+		return nil
+	}
+	root := rootWithLoginForTest(rt, nil)
+
+	err := execute(context.Background(), root, "login", "--callback-port", "8080")
+	if err == nil {
+		t.Fatal("Run(login) returned nil error for out-of-range callback port")
+	}
+	if !strings.Contains(err.Error(), "not a registered callback port") {
+		t.Fatalf("Run(login) error = %v, want registered-port error", err)
+	}
+	if loginCalls != 0 {
+		t.Fatalf("login runner calls = %d, want 0 (rejected before run)", loginCalls)
 	}
 }
 

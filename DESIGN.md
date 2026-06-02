@@ -605,7 +605,7 @@ Binary name: `postern`. Single Go binary with subcommands: `login`, `mint`, `ssh
 
 The CLI authenticates the engineer to the configured IdP using **OAuth 2.0 Authorization Code + PKCE with a localhost loopback callback** — the standard pattern used by `gh auth login`, `kubectl oidc-login`, etc.
 
-Why this and not OAuth 2.0 Device Authorization Grant: not all OIDC IdPs support the device grant (Cognito User Pools notably do not). Auth Code + PKCE is universally supported. Headless cases (engineer running on a jumphost without browser access) use SSH local port forwarding as the documented escape hatch.
+Why this and not OAuth 2.0 Device Authorization Grant: not all OIDC IdPs support the device grant (Cognito User Pools notably do not), and a headless path that fails against the reference IdP is worse than none. Auth Code + PKCE is universally supported. Headless cases (engineer on a remote host, container, or jumphost without a local browser) use `--no-browser` plus SSH local port forwarding — see *Headless logins* below.
 
 Flow:
 
@@ -636,17 +636,35 @@ The port set is hardcoded by build, not config — engineers can't change it (it
 
 10 entries gives ample headroom — port collision on an engineer's laptop is exceedingly rare. If somehow all are in use, the CLI errors with a clear message.
 
-#### Headless workaround
+#### Headless logins: `--no-browser`
 
-If an engineer needs to run `postern login` from a jumphost with no local browser, the documented workaround is **SSH local port forwarding**:
+An engineer running `postern login` on a remote host, container, or jumphost with no usable local browser passes `--no-browser`. The CLI then skips the browser launch and instead prints the authorization URL plus the loopback port it is waiting on, leaving the redirect for the engineer to complete from a browser elsewhere. The OAuth flow is otherwise unchanged — same Authorization Code + PKCE, same loopback callback. This is not the device grant; it is the standard loopback flow with the browser step done by hand.
+
+Completing the login still requires the IdP's redirect to reach the CLI's loopback listener, so the engineer forwards the port back with **SSH local port forwarding**:
 
 ```
-ssh -L 50001:localhost:50001 jumphost
-# Then on the jumphost:
-postern login
+ssh -L 50001:localhost:50001 remote-host
+# Then on the remote host:
+postern login --no-browser
 ```
 
-The `-L` flag tunnels the engineer's laptop port 50001 to the jumphost's port 50001. When the CLI on the jumphost binds 50001 and the IdP redirects the laptop's browser to `http://localhost:50001/cb`, the laptop's browser hits the local port (which is tunneled to the jumphost CLI's listener). Auth completes normally.
+The CLI prints the exact `ssh -L` line for the port it bound, so the forwarded port always matches the redirect URI baked into the printed URL. The `-L` flag tunnels the engineer's laptop port 50001 to the remote host's port 50001; when the engineer opens the printed URL on their laptop and the IdP redirects to `http://127.0.0.1:50001/cb`, the laptop's browser hits the tunneled port and the remote CLI's listener catches the code.
+
+Because the CLI binds the first free port from the set, a busy port on the remote host shifts the listener to the next one — and now the engineer's pre-arranged `ssh -L 50001:...` points at the wrong listener. `--callback-port` pins a single port up front (constrained to the registered set) so the forward can be arranged in the same breath. An unregistered value is rejected before any IdP round-trip.
+
+#### Threat: local-app silent authorization
+
+The loopback flow inherits a limitation common to every public-client CLI that uses a system browser (`gh`, `aws`, `gcloud`, `kubectl oidc-login`): a **malicious process running as the engineer on the engineer's machine** can mint its own broker access token without the engineer noticing. The `client_id` is public (it lives in the engineer's config), so the malicious process initiates its *own* Authorization Code + PKCE flow with its own `code_verifier`, opens the engineer's browser to the authorize endpoint, and — if the browser holds a live IdP session — the IdP redirects back with a code and no user interaction. The attacker's own loopback listener catches the code and exchanges it.
+
+PKCE does **not** defend against this. PKCE binds a code to the verifier held by whoever *started* the flow; it stops a third party who *intercepts someone else's* code from exchanging it. It does nothing against an attacker who legitimately starts their own flow. (This — native-app redirect interception and public-client impersonation — is much of why the Device Authorization Grant and claimed-`https`-redirect schemes exist. Neither is usable here: the reference IdP doesn't support the device grant, and a generic desktop CLI has no OS-guaranteed claimed-redirect equivalent.)
+
+What bounds the exposure in Postern:
+
+- The precondition is already-present local code execution as the engineer — an attacker at that level has many other paths (ptrace the CLI, shim `ssh`, key-log the SSO password). The marginal gain here is an *independent* token obtained without touching the CLI's keychain slot.
+- Short token TTLs (recommended access = 1h, refresh = 24h with rotation) bound the window.
+- Every certificate mint passes the broker `Policy` and lands in the `Audit` log under the engineer's identity, so abuse is authorized against the same rules and leaves a trail.
+
+The mitigation that actually breaks the *silent* part is forcing fresh authentication on each login (an IdP `prompt=login` / `max_age=0`-style policy), so a background flow can't ride an existing session unseen. Whether an IdP honors that varies (it is not uniformly supported), so it's an operator-side IdP configuration choice rather than something the CLI imposes.
 
 ### Local SSH key and certificate cache
 

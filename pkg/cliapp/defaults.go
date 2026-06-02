@@ -36,7 +36,12 @@ func defaultProfileResolver(binaryName string, configPath string, envPrefix stri
 // defaultLoginRunner wires OAuth login. Captures binaryName so keychain
 // namespacing matches the rest of the tokenstore calls.
 func defaultLoginRunner(binaryName string) loginRunnerFunc {
-	return func(ctx context.Context, profile ResolvedProfile, output io.Writer) error {
+	return func(ctx context.Context, profile ResolvedProfile, output io.Writer, opts loginOptions) error {
+		var callbackPorts []int
+		if opts.CallbackPort != 0 {
+			callbackPorts = []int{opts.CallbackPort}
+		}
+
 		result, err := oauthlogin.Login(ctx, oauthlogin.Options{
 			ProfileName:   profile.Name,
 			Issuer:        profile.Profile.IDP.Issuer,
@@ -45,6 +50,9 @@ func defaultLoginRunner(binaryName string) loginRunnerFunc {
 			AudienceParam: profile.Profile.IDP.AudienceParam,
 			Scopes:        profile.Profile.IDP.Scopes,
 			Store:         tokenstore.NewKeychain(binaryName),
+			CallbackPorts: callbackPorts,
+			NoBrowser:     opts.NoBrowser,
+			Prompt:        output,
 		})
 		if err != nil {
 			return err

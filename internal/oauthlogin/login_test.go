@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +91,82 @@ func TestLoginCompletesAuthorizationCodeFlow(t *testing.T) {
 	}
 	if got, want := idp.tokenForm.Get("resource"), "https://broker.example.com"; got != want {
 		t.Fatalf("token resource = %q, want %q", got, want)
+	}
+}
+
+// TestLoginNoBrowserPrintsInstructionsAndSkipsBrowser proves --no-browser
+// leaves the loopback flow intact: BrowserOpen is never called, the
+// instructions (port + ssh -L hint + URL) reach Prompt, and the redirect
+// still completes the exchange when the engineer opens the printed URL.
+func TestLoginNoBrowserPrintsInstructionsAndSkipsBrowser(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+	store := &recordingTokenSaver{}
+	now := time.Unix(1777000000, 0)
+
+	browserCalls := 0
+	recordBrowser := func(context.Context, string) error {
+		browserCalls++
+		return nil
+	}
+	prompt := &browserlessPrompt{idp: idp}
+
+	result, err := Login(context.Background(), Options{
+		ProfileName:   "staging",
+		Issuer:        idp.URL(),
+		ClientID:      "client-123",
+		Scopes:        "postern/cli-access",
+		Store:         store,
+		BrowserOpen:   recordBrowser,
+		CallbackPorts: []int{0},
+		NoBrowser:     true,
+		Prompt:        prompt,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if got, want := result.DisplayName(), "engineer@example.com"; got != want {
+		t.Fatalf("DisplayName() = %q, want %q", got, want)
+	}
+	if browserCalls != 0 {
+		t.Fatalf("BrowserOpen calls = %d, want 0 under --no-browser", browserCalls)
+	}
+
+	printed := prompt.String()
+	for _, want := range []string{"ssh -L ", "127.0.0.1:", idp.URL()} {
+		if !strings.Contains(printed, want) {
+			t.Fatalf("instructions missing %q:\n%s", want, printed)
+		}
+	}
+}
+
+// TestLoginRejectsUnboundPinnedPort confirms a single unavailable pinned
+// port fails fast instead of silently falling through to another port.
+func TestLoginRejectsUnboundPinnedPort(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	defer occupied.Close()
+	pinned := occupied.Addr().(*net.TCPAddr).Port
+
+	_, err = Login(context.Background(), Options{
+		ProfileName:   "staging",
+		Issuer:        idp.URL(),
+		ClientID:      "client-123",
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   noopBrowserOpen,
+		CallbackPorts: []int{pinned},
+	})
+	if err == nil {
+		t.Fatal("Login() returned nil error binding an occupied pinned port")
+	}
+	if !strings.Contains(err.Error(), "bind loopback callback") {
+		t.Fatalf("Login() error = %v, want bind loopback callback", err)
 	}
 }
 
@@ -247,6 +324,53 @@ func TestLoginSurfacesDiscoveryAndExchangeSentinels(t *testing.T) {
 
 func noopBrowserOpen(context.Context, string) error {
 	return nil
+}
+
+// browserlessPrompt captures Login's --no-browser instructions and, on
+// seeing the authorization URL, drives the IdP redirect once — standing in
+// for the engineer opening the printed URL in a browser elsewhere.
+type browserlessPrompt struct {
+	idp  *fakeIDP
+	mu   sync.Mutex
+	buf  strings.Builder
+	once sync.Once
+}
+
+func (p *browserlessPrompt) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	n, err := p.buf.Write(b)
+	text := p.buf.String()
+	p.mu.Unlock()
+
+	if authURL := firstURL(text); authURL != "" {
+		p.once.Do(func() {
+			go func() { _ = p.idp.OpenBrowser(context.Background(), authURL) }()
+		})
+	}
+	return n, err
+}
+
+func (p *browserlessPrompt) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.String()
+}
+
+// firstURL returns the first whitespace-terminated http(s) URL in text, or
+// "" if none has been fully written yet.
+func firstURL(text string) string {
+	idx := strings.Index(text, "http://")
+	if idx == -1 {
+		idx = strings.Index(text, "https://")
+	}
+	if idx == -1 {
+		return ""
+	}
+	rest := text[idx:]
+	if cut := strings.IndexAny(rest, " \r\n"); cut != -1 {
+		return rest[:cut]
+	}
+	return ""
 }
 
 type recordingTokenSaver struct {

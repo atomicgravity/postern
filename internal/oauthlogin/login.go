@@ -32,6 +32,14 @@ const defaultHTTPTimeout = 30 * time.Second
 // include all of them.
 var defaultCallbackPorts = []int{50001, 50002, 50003, 50004, 50005, 50006, 50007, 50008, 50009, 50010}
 
+// AllowedCallbackPorts returns a copy of the loopback ports the CLI is
+// willing to bind. Operators register exactly these redirect URIs with
+// their IdP, so a caller-pinned callback port (postern login
+// --callback-port) must name one of them.
+func AllowedCallbackPorts() []int {
+	return append([]int(nil), defaultCallbackPorts...)
+}
+
 var (
 	ErrOAuthLoginProfileRequired       = errors.New("profile name is required")
 	ErrOAuthLoginIssuerRequired        = errors.New("issuer is required")
@@ -73,7 +81,16 @@ type Options struct {
 	HTTPClient    *http.Client
 	BrowserOpen   BrowserOpenFunc
 	CallbackPorts []int
-	Now           func() time.Time
+	// NoBrowser disables the browser launch and instead prints the
+	// authorization URL plus the loopback port to Prompt, leaving the
+	// engineer to complete the redirect manually (e.g. after forwarding
+	// the port back from a headless host). The loopback callback flow is
+	// otherwise unchanged.
+	NoBrowser bool
+	// Prompt receives the NoBrowser instructions (the authorization URL
+	// and the loopback port to forward). Defaults to io.Discard.
+	Prompt io.Writer
+	Now    func() time.Time
 }
 
 // Result is the engineer-identity summary Login returns to the CLI for the
@@ -99,7 +116,7 @@ func Login(ctx context.Context, options Options) (Result, error) {
 		return Result{}, err
 	}
 
-	listener, redirectURI, err := listenForCallback(options.CallbackPorts)
+	listener, redirectURI, callbackPort, err := listenForCallback(options.CallbackPorts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -128,7 +145,9 @@ func Login(ctx context.Context, options Options) (Result, error) {
 	}
 	authorizeURL := cfg.AuthCodeURL(state, authOpts...)
 
-	if err := options.BrowserOpen(ctx, authorizeURL); err != nil {
+	if options.NoBrowser {
+		printHeadlessInstructions(options.Prompt, authorizeURL, callbackPort)
+	} else if err := options.BrowserOpen(ctx, authorizeURL); err != nil {
 		return Result{}, fmt.Errorf("open browser: %w", err)
 	}
 
@@ -278,6 +297,9 @@ func normalizeOptions(options Options) Options {
 	if len(options.CallbackPorts) == 0 {
 		options.CallbackPorts = defaultCallbackPorts
 	}
+	if options.Prompt == nil {
+		options.Prompt = io.Discard
+	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -304,7 +326,7 @@ func validateOptions(options Options) error {
 	return errors.Join(errs...)
 }
 
-func listenForCallback(ports []int) (net.Listener, string, error) {
+func listenForCallback(ports []int) (net.Listener, string, int, error) {
 	var lastErr error
 	for _, port := range ports {
 		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -315,14 +337,28 @@ func listenForCallback(ports []int) (net.Listener, string, error) {
 		addr, ok := listener.Addr().(*net.TCPAddr)
 		if !ok {
 			_ = listener.Close()
-			return nil, "", fmt.Errorf("loopback listener returned non-TCP addr %T", listener.Addr())
+			return nil, "", 0, fmt.Errorf("loopback listener returned non-TCP addr %T", listener.Addr())
 		}
-		return listener, fmt.Sprintf("http://127.0.0.1:%d%s", addr.Port, callbackPath), nil
+		return listener, fmt.Sprintf("http://127.0.0.1:%d%s", addr.Port, callbackPath), addr.Port, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no callback ports configured")
 	}
-	return nil, "", fmt.Errorf("bind loopback callback: %w", lastErr)
+	return nil, "", 0, fmt.Errorf("bind loopback callback: %w", lastErr)
+}
+
+// printHeadlessInstructions tells the engineer how to complete a
+// --no-browser login: which loopback port the CLI is waiting on, how to
+// forward it back from a remote host, and the URL to open. The port is
+// the one actually bound, so the ssh -L example always matches the
+// redirect URI baked into authorizeURL.
+func printHeadlessInstructions(out io.Writer, authorizeURL string, port int) {
+	fmt.Fprintf(out, "Browser launch is disabled (--no-browser).\n\n")
+	fmt.Fprintf(out, "This CLI is waiting for the login redirect on 127.0.0.1:%d.\n", port)
+	fmt.Fprintf(out, "If your browser is on another machine, forward that port back first, e.g.:\n\n")
+	fmt.Fprintf(out, "    ssh -L %d:localhost:%d <this-host>\n\n", port, port)
+	fmt.Fprintf(out, "Then open this URL in that browser to authorize:\n\n")
+	fmt.Fprintf(out, "    %s\n\n", authorizeURL)
 }
 
 type callbackResponse struct {
