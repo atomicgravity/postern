@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/atomicgravity/postern/compare/v1.0.1...v1.1.0) (2026-06-02)
+
+
+### Features
+
+* **cli:** support for --no-browser on login ([b06ed4c](https://github.com/atomicgravity/postern/commit/b06ed4cb20eea9f9d2168692a8a077aa796d0ada))
+
 ## [1.0.1](https://github.com/atomicgravity/postern/compare/v1.0.0...v1.0.1) (2026-06-01)
 
 
