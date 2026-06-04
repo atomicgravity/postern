@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/atomicgravity/postern/compare/v1.1.0...v1.2.0) (2026-06-04)
+
+
+### Features
+
+* **cli:** selectable token store backend (keychain or file) ([c05c299](https://github.com/atomicgravity/postern/commit/c05c299f77cb35314644ae7e6e67b8853441ca95))
+
 ## [1.1.0](https://github.com/atomicgravity/postern/compare/v1.0.1...v1.1.0) (2026-06-02)
 
 
