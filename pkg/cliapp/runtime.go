@@ -74,7 +74,7 @@ type sourceProxy interface {
 // immediately.
 type sourceProxyStarterFunc func(ctx context.Context, options securetunnel.SourceProxyOptions) (sourceProxy, error)
 
-type deleteTokenFunc func(profile string) error
+type deleteTokenFunc func(profile ResolvedProfile) error
 
 // openCertStoreFunc returns a *certcache.Store for the given profile.
 type openCertStoreFunc func(profile string) (*certcache.Store, error)
@@ -121,13 +121,13 @@ func newRuntime(binaryName string, options Options) runtime {
 		configPath:         options.ConfigPath,
 		lookupEnv:          lookupEnv,
 		profileResolver:    defaultProfileResolver(binaryName, options.ConfigPath, envPrefix, lookupEnv),
-		loginRunner:        defaultLoginRunner(binaryName),
-		accessToken:        defaultAccessToken(binaryName),
+		loginRunner:        defaultLoginRunner(binaryName, envPrefix, lookupEnv),
+		accessToken:        defaultAccessToken(binaryName, envPrefix, lookupEnv),
 		sshCertRequester:   defaultSSHCertRequester,
 		tunnelOpener:       defaultTunnelOpener,
 		sourceProxyStarter: defaultSourceProxyStarter,
 		timePayloadFetch:   defaultTimePayloadFetcher,
-		deleteToken:        defaultDeleteToken(binaryName),
+		deleteToken:        defaultDeleteToken(binaryName, envPrefix, lookupEnv),
 		openCertStore:      defaultOpenCertStore(binaryName),
 		execSSH:            defaultExecCommand("execSSH"),
 		execSSHTimefix:     defaultExecSSHTimefix,

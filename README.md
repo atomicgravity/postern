@@ -89,6 +89,37 @@ ssh widget-042                                        # then use vanilla tooling
 
 You can `postern mint` several devices in a row; each goes into the per-device cache. As long as the cert is fresh, every ssh-aware tool finds the device.
 
+### Headless / remote hosts
+
+Running Postern on a remote server, container, or jumphost — somewhere without a local browser or a usable OS keychain — needs two adjustments:
+
+**No local browser.** Pass `--no-browser` to `postern login`. The CLI skips launching a browser and instead prints the authorization URL plus the exact `ssh -L` line to forward the loopback callback port back to the machine where your browser lives:
+
+```sh
+ssh -L 50001:localhost:50001 remote-host   # forward the callback port
+postern login --no-browser                 # on remote-host; open the printed URL on your laptop
+```
+
+The OAuth flow is otherwise identical (Authorization Code + PKCE, loopback callback). If the printed port isn't the one you forwarded, pin it up front with `--callback-port <n>` (must be one of the registered `50001-50010`).
+
+**No keychain.** By default Postern stores tokens in the OS keychain (macOS Keychain / Linux Secret Service). On hosts where that's unreachable — D-Bus / Secret Service missing or blocked by AppArmor — switch to a per-profile JSON file under `~/.postern/tokens/` (mode `0600`). Either set it for the session:
+
+```sh
+export POSTERN_TOKEN_STORE=file
+postern login --no-browser
+```
+
+…or pin it in `~/.postern/config.yaml` so you don't re-export it each session:
+
+```yaml
+default:
+  broker: https://postern.example.com
+  idp: { ... }
+  token_store: file
+```
+
+Precedence is `POSTERN_TOKEN_STORE` env > `token_store` in config > keychain default — the env var wins so you can flip a config-pinned machine back to the keychain for one command. It's opt-in (not an automatic fallback) because the file backend writes your refresh token to disk readable by your own user.
+
 ### Firewalled devices (tunneling)
 
 For devices you can't reach on the LAN — behind a customer firewall, NAT, or mobile network — Postern tunnels through AWS IoT Secure Tunneling. Three entry points:
@@ -120,7 +151,7 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 | Command | Purpose |
 |---|---|
 | `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
-| `postern login` | SSO + cache access / refresh tokens |
+| `postern login [--no-browser] [--callback-port <n>]` | SSO + cache access / refresh tokens (`--no-browser` for headless / remote hosts) |
 | `postern ssh [--user <name>] [--tunnel] <device> [user@]<host> [...]` | SSH with cert auto-mint + reuse |
 | `postern scp [--user <name>] [--tunnel] <device> <src> <dst> [...]` | scp with cert auto-mint + reuse |
 | `postern tunnel <device> [--user <name>] [--max-lifetime <dur>] [--port-only]` | Hold-open tunnel for VSCode-remote / rsync / git / multi-session workflows |

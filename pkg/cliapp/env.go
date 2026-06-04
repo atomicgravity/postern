@@ -18,6 +18,7 @@ const (
 	idpAudienceParamEnvSuffix = "IDP_AUDIENCE_PARAM"
 	idpScopesEnvSuffix        = "IDP_SCOPES"
 	defaultSSHUserEnvSuffix   = "DEFAULT_SSH_USER"
+	tokenStoreEnvSuffix       = "TOKEN_STORE"
 )
 
 // EnvPrefixForBinaryName derives a POSIX-safe env-var prefix from binaryName

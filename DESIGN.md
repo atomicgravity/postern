@@ -628,6 +628,8 @@ Subsequent commands use the cached access token until it is close to its JWT `ex
 
 Recommended IdP-side TTLs: **access token = 1 hour, refresh token = 24 hours, with refresh-token rotation enabled.** Engineers run `postern login` once per workday (browser SSO, MFA if configured), refresh their access token silently in the background as needed, and re-auth the next morning. Cognito's defaults (especially the 30-day refresh) are too long for this use case; the Cognito sample under `examples/` sets these explicitly. Refresh-token rotation defends against a leaked refresh token by invalidating it on the next legitimate refresh.
 
+The token entries default to the OS keychain; on hosts without a reachable keychain the engineer selects an on-disk file backend instead — see *Token storage* below.
+
 #### Callback URL strategy
 
 Many OIDC IdPs (notably Cognito) don't support arbitrary loopback port wildcards — callback URLs are matched literally. Postern uses a **hardcoded fixed set of loopback ports** (`50001-50010`); the operator must register all ten with their IdP's app client. The CLI tries to bind to them in order, picks the first free port, uses the corresponding registered URL.
@@ -926,7 +928,11 @@ Field semantics:
 
 On version mismatch (e.g., `version: 1` metadata read by a CLI expecting a newer schema), the CLI discards the cached tokens and prompts `postern login`. No migration logic — token state is short-lived (24h refresh ceiling).
 
-Linux fallback for headless / no-D-Bus environments: JSON file in the CLI home dotdir, for example `~/.postern/state-<profile>.json`, mode `0600`, parent dir `0700`. This fallback is protected by local filesystem permissions, not transparent encryption; encrypting without a user-supplied passphrase would only move the secret to another local storage location. CLI prints a warning at login time when falling back.
+File backend for headless / no-keychain environments (no D-Bus Secret Service, or one blocked by AppArmor): the same per-profile state is stored as a JSON file in a `tokens` subdirectory of the CLI home dotdir, mode `0600`, parent dir `0700`. It holds the whole `State` as one blob per profile rather than the keychain's three separate entries.
+
+The backend is selected with precedence `POSTERN_TOKEN_STORE` env var > the profile's `token_store` config field > default. Values are `keychain` (the default) and `file`. The config field lets an engineer pin the backend on a known-keychain-less machine without re-exporting an env var each session; the env var overrides it because keychain availability is a property of the machine, not the profile, and the same config may be carried across hosts where the answer differs. The env override is applied at consumption rather than in the normal per-profile override chain, so `postern logout` — which resolves the backend best-effort, tolerating a missing or invalid config so it can always clear credentials — shares the same precedence rule.
+
+The file backend is an explicit opt-in rather than an automatic fallback: a transient keychain error surfaces instead of silently relocating credentials to disk. It is protected by local filesystem permissions, not transparent encryption; encrypting without a user-supplied passphrase would only move the secret to another local storage location.
 
 ### Configuration
 
@@ -979,13 +985,15 @@ Per-field env overrides apply to the resolved profile. Env-var names derive mech
 
 Override precedence: command-line flag > env var > config file profile > Postern defaults.
 
+The `token_store` field (`keychain` vs `file`) is overridden by `POSTERN_TOKEN_STORE`, but unlike the fields above the override is applied at consumption rather than in this per-profile merge — the backend must also be resolvable by `postern logout` without full profile validation. See *Token storage* above.
+
 Two onboarding paths, both supported:
 - **Engineer-facing default**: operator publishes a YAML snippet, engineer pastes it under their config file, runs `postern login`. Three to five lines per profile.
 - **Automation/scripts**: `postern configure --profile=staging --broker=https://... --idp-issuer=... --idp-client-id=... --idp-audience=...` writes/edits the file non-interactively, merging with any existing profile (only fields explicitly passed are updated; other fields preserved). For full replacement, pass `--replace`. Never prompts. Useful for golden-image laptops, CI, mass onboarding.
 
-`postern logout` clears the keychain slot for the resolved profile (the one selected by `--profile` or `POSTERN_PROFILE`, or `default`). Profile renames in the YAML orphan the old slot in the keychain — the next `postern login` writes a new slot under the new name; the old slot stays until the engineer logs out under that profile name or manually clears it. This is benign (orphaned tokens still expire on their own TTL).
+`postern logout` clears the stored token slot for the resolved profile (the one selected by `--profile` or `POSTERN_PROFILE`, or `default`) from whichever backend is active. Profile renames in the YAML orphan the old slot — the next `postern login` writes a new slot under the new name; the old slot stays until the engineer logs out under that profile name or manually clears it. This is benign (orphaned tokens still expire on their own TTL).
 
-The config file holds no secrets — broker URLs and IdP public identifiers only. Tokens live in the OS keychain, keyed per profile (see *Token storage*).
+The config file holds no secrets — broker URLs and IdP public identifiers only. Tokens live in the OS keychain (or the on-disk file backend), keyed per profile (see *Token storage*).
 
 #### Broker config
 

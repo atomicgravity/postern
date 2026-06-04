@@ -89,6 +89,42 @@ staging:
 	}
 }
 
+// TestConfigureMergePreservesTokenStore is a regression guard: a merge-mode
+// configure (no --replace) must not drop a field it has no flag for. An
+// engineer who pinned token_store: file and later runs `configure
+// --idp-client-id ...` must keep the file backend; silently wiping it would
+// push them back to the keychain on the next login with no error. If a future
+// commit reconstructs the profile from flags instead of merging onto the
+// existing one, this test fails first. Do not delete this test.
+func TestConfigureMergePreservesTokenStore(t *testing.T) {
+	configPath := writeConfigFileForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: old-client
+    audience: https://postern.example.com
+  token_store: file
+`)
+	root := New(Options{ConfigPath: configPath, LookupEnv: emptyEnv})
+
+	err := execute(context.Background(), root,
+		"configure",
+		"--idp-client-id", "new-client",
+	)
+	if err != nil {
+		t.Fatalf("Run(configure) returned error: %v", err)
+	}
+
+	config, err := LoadConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfigFile() error = %v", err)
+	}
+	profile := config.Profiles["default"]
+	assertEqual(t, profile.IDP.ClientID, "new-client", "client id")
+	assertEqual(t, profile.TokenStore, "file", "token_store preserved across merge")
+}
+
 func TestConfigureReplacesExistingProfile(t *testing.T) {
 	configPath := writeConfigFileForTest(t, `
 default:

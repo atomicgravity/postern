@@ -39,10 +39,15 @@ var (
 
 // Profile is a single named CLI profile: broker URL + IdP details.
 // DefaultSSHUser is optional; resolveUser falls back at use time.
+//
+// TokenStore selects the token persistence backend ("keychain" or "file").
+// Its POSTERN_TOKEN_STORE env override is resolved in defaultTokenStore, not
+// applyEnvOverrides.
 type Profile struct {
 	Broker         string    `yaml:"broker"`
 	IDP            IDPConfig `yaml:"idp"`
 	DefaultSSHUser string    `yaml:"default_ssh_user,omitempty"`
+	TokenStore     string    `yaml:"token_store,omitempty"`
 }
 
 // IDPConfig holds the OIDC client details. At least one of Audience or

@@ -170,6 +170,85 @@ default:
 	assertEqual(t, profile.IDP.Scopes, "postern/env-access", "scopes")
 }
 
+// TestLoadConfigParsesTokenStore locks the YAML wire path for the token_store
+// field: it must survive LoadConfig and be whitespace-trimmed by trimProfile.
+// If the yaml tag or the trimProfile line is dropped, config-file backend
+// selection silently becomes a no-op (engineer sets token_store: file, gets
+// the keychain anyway, with no error).
+func TestLoadConfigParsesTokenStore(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+  token_store: "  file  "
+`)
+
+	assertEqual(t, config.Profiles["default"].TokenStore, "file", "token_store")
+}
+
+// TestSaveConfigRoundTripsTokenStore proves token_store survives a
+// SaveConfig → LoadConfig round trip, and that an empty value emits no key
+// (the omitempty tag) so existing configs don't grow a spurious token_store
+// line on rewrite.
+func TestSaveConfigRoundTripsTokenStore(t *testing.T) {
+	config := Config{Profiles: map[string]Profile{
+		"file-host": {
+			Broker:     "https://postern.example.com",
+			IDP:        IDPConfig{Issuer: "https://idp.example.com", ClientID: "c", Audience: "https://postern.example.com"},
+			TokenStore: "file",
+		},
+		"plain": {
+			Broker: "https://postern.example.com",
+			IDP:    IDPConfig{Issuer: "https://idp.example.com", ClientID: "c", Audience: "https://postern.example.com"},
+		},
+	}}
+
+	var buf strings.Builder
+	if err := SaveConfig(&buf, config); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	reloaded, err := LoadConfig(strings.NewReader(buf.String()))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	assertEqual(t, reloaded.Profiles["file-host"].TokenStore, "file", "round-tripped token_store")
+	assertEqual(t, reloaded.Profiles["plain"].TokenStore, "", "absent token_store")
+
+	if strings.Contains(buf.String(), "token_store") && !strings.Contains(buf.String(), "token_store: file") {
+		t.Fatalf("SaveConfig emitted an unexpected token_store key:\n%s", buf.String())
+	}
+}
+
+// TestResolveProfileDoesNotApplyTokenStoreEnv guards that token_store is not
+// merged by applyEnvOverrides: the env var is applied later, in
+// defaultTokenStore, so the resolved profile must carry only the config-file
+// value. If token_store is ever added to applyEnvOverrides, the env value
+// double-applies and this test fails first. Do not delete this test.
+func TestResolveProfileDoesNotApplyTokenStoreEnv(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+  token_store: keychain
+`)
+
+	resolved, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+		EnvName(DefaultEnvPrefix, tokenStoreEnvSuffix): "file",
+	})})
+	if err != nil {
+		t.Fatalf("ResolveProfile() error = %v", err)
+	}
+
+	assertEqual(t, resolved.Profile.TokenStore, "keychain", "resolved token_store (env must not leak in)")
+}
+
 // TestResolveProfileDefaultSSHUserWirePaths covers the wire paths the
 // DefaultSSHUser field rides on: the YAML scalar "default_ssh_user" and
 // the env override "<PREFIX>_DEFAULT_SSH_USER". When neither is set,

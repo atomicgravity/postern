@@ -72,6 +72,7 @@ func trimProfile(profile Profile) Profile {
 	profile.IDP.AudienceParam = strings.TrimSpace(profile.IDP.AudienceParam)
 	profile.IDP.Scopes = strings.TrimSpace(profile.IDP.Scopes)
 	profile.DefaultSSHUser = strings.TrimSpace(profile.DefaultSSHUser)
+	profile.TokenStore = strings.TrimSpace(profile.TokenStore)
 	return profile
 }
 

@@ -44,6 +44,8 @@ type Keychain struct {
 	client  keyringClient
 }
 
+var _ Store = Keychain{}
+
 type keychainMetadata struct {
 	Version               int    `json:"version"`
 	IDPIssuer             string `json:"idp_issuer"`

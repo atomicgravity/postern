@@ -11,6 +11,15 @@ import (
 	"strings"
 )
 
+// Store is the per-profile token persistence abstraction. Two concrete
+// backends implement it: Keychain (OS keyring) and File (JSON on disk). Load
+// returns ErrNotFound when no state is stored for the profile.
+type Store interface {
+	Load(profile string) (State, error)
+	Save(profile string, state State) error
+	Delete(profile string) error
+}
+
 // StateVersion is the on-disk/keychain schema version; bump when State gains
 // required fields. Older versions decode with ErrUnsupportedStateVersion.
 const StateVersion = 1

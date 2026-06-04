@@ -18,6 +18,8 @@ type File struct {
 	dir string
 }
 
+var _ Store = File{}
+
 // NewFile constructs a File-backed tokenstore rooted at dir.
 func NewFile(dir string) File {
 	return File{dir: dir}
