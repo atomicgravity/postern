@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/atomicgravity/postern/compare/v1.3.0...v1.4.0) (2026-06-09)
+
+
+### Features
+
+* **cli:** add setup-ssh to wire the Include into ~/.ssh/config ([892d2ab](https://github.com/atomicgravity/postern/commit/892d2abf3ada8a7346d260cd2532c542b22f92c8))
+* Developer ID-sign and notarize the macOS binaries ([dfd7377](https://github.com/atomicgravity/postern/commit/dfd73770c9f4a45a31f9555cc5defb9ab48f9d48))
+
 ## [1.3.0](https://github.com/atomicgravity/postern/compare/v1.2.0...v1.3.0) (2026-06-09)
 
 
