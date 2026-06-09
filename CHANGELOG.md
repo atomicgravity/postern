@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/atomicgravity/postern/compare/v1.2.0...v1.3.0) (2026-06-09)
+
+
+### Features
+
+* principal classes for automated (client-credentials) callers ([8e41293](https://github.com/atomicgravity/postern/commit/8e412934e7f89e015907a1c2e1ef4d8947b66ed6))
+
 ## [1.2.0](https://github.com/atomicgravity/postern/compare/v1.1.0...v1.2.0) (2026-06-04)
 
 
