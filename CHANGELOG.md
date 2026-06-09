@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.2](https://github.com/atomicgravity/postern/compare/v1.4.1...v1.4.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **terraform:** stop pinning audience at the APIGW JWT authorizer ([13f7da0](https://github.com/atomicgravity/postern/commit/13f7da022b49126d1f6d2e05e2d3e02a4cf00ce1))
+
 ## [1.4.1](https://github.com/atomicgravity/postern/compare/v1.4.0...v1.4.1) (2026-06-09)
 
 
