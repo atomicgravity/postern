@@ -42,6 +42,18 @@ subcommand, which is a placeholder (`pkg/cliapp/app.go` `placeholderCommand`).
 **Last code-carrying commit:** `c953f4c` — *feat(broker): configure
 principal-class rules via env (Lambda)*.
 
+**Fix apigw-aud-pin (2026-06-09, `ac26282`):** the APIGW HTTP API JWT
+authorizer no longer pins `idp_audience`. It ANDs its constraints, so it
+couldn't express the broker's aud-OR-scope acceptance — pinning aud 401'd
+scope-only (machine / client-credentials) tokens at the edge before the
+broker's v1.4.1 aud-OR-scope check ran. Authorizer now does signature +
+issuer + exp only; broker stays the authoritative aud-OR-scope verifier
+(cross-app isolation unchanged; audience-only deployments lose the edge pin
+but no security). `terraform/postern-broker/lambda.tf` + `variables.tf` +
+README round-trip. Needs a release so the sai operator (who runs
+`apigw_jwt_authorizer_enabled = true` + `idp_required_scope`) can bump the
+module ref.
+
 **Phase broker-aud-scope: COMPLETE + gated.** Broker verifier now accepts a
 token matching EITHER configured `idp.audience` OR `idp.required_scope` (was AND);
 fail-closed `matched*` form (a fail-open draft was caught + corrected in review);

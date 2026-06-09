@@ -124,7 +124,7 @@ resource "aws_apigatewayv2_route" "default" {
   target    = "integrations/${aws_apigatewayv2_integration.broker.id}"
 
   # When apigw_jwt_authorizer_enabled, APIGW pre-validates the bearer JWT
-  # (signature, issuer, audience) on every route — INCLUDING /healthz —
+  # (signature, issuer, exp) on every route — INCLUDING /healthz —
   # before invoking Lambda. The broker still does its full check; this is
   # a defense-in-depth filter.
   #
@@ -148,14 +148,13 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
   authorizer_type  = "JWT"
   identity_sources = ["$request.header.Authorization"]
 
-  # APIGW's JWT authorizer enforces signature + issuer + exp/nbf
-  # unconditionally. Audience is optional — when the audience list is
-  # empty, APIGW skips the aud check entirely. Operators running scope-
-  # only auth (idp_required_scope set, idp_audience empty) still get
-  # signature+issuer pre-filtering at APIGW; the broker enforces scope.
+  # Signature + issuer + exp/nbf only — audience is intentionally not pinned.
+  # The authorizer ANDs its constraints, so pinning aud would reject the
+  # scope-only tokens (client-credentials carry no aud) that the broker
+  # accepts via aud-OR-scope. The broker re-verifies every token, so
+  # audience binding stays there.
   jwt_configuration {
-    issuer   = var.idp_issuer
-    audience = var.idp_audience != "" ? [var.idp_audience] : []
+    issuer = var.idp_issuer
   }
 }
 

@@ -302,14 +302,16 @@ variable "audit_log_retention_days" {
 #   observability; useful regardless of whether the JWT authorizer is on.
 #
 #   apigw_jwt_authorizer_enabled (default false) — APIGW pre-validates the
-#   bearer JWT's signature, issuer, and audience before invoking the broker
+#   bearer JWT's signature, issuer, and exp before invoking the broker
 #   Lambda. Defense-in-depth against parser-side CVEs and cold-start
-#   amplification on bad-token probes. The broker still does its full
-#   check; APIGW is a pre-filter, not the authority.
+#   amplification on bad-token probes. Audience is NOT pinned at the edge
+#   (the broker enforces aud-OR-scope, which the edge's AND-only authorizer
+#   can't express). The broker still does its full check; APIGW is a
+#   pre-filter, not the authority.
 #
-# When the JWT authorizer is on, the `/healthz` route gets an explicit
-# unauthenticated override so external health checks keep working without
-# minting a JWT.
+# When the authorizer is on, every route — including `/healthz` — is
+# JWT-gated; the Lambda+APIGW path doesn't need an unauthenticated probe
+# (see the README "Layered JWT defense" section).
 
 variable "apigw_access_logs_enabled" {
   description = "When true (default), API Gateway writes a JSON access log line per request to a separate CloudWatch log group (one line per Lambda invocation attempt, including pre-Lambda rejections when the JWT authorizer is on). Independent of apigw_jwt_authorizer_enabled. Operators with strict log-cost budgets can turn this off."
@@ -324,7 +326,7 @@ variable "apigw_access_log_retention_days" {
 }
 
 variable "apigw_jwt_authorizer_enabled" {
-  description = "Enable the API Gateway HTTP API JWT authorizer in front of the broker Lambda. When true, APIGW validates the access token's signature, issuer (from idp_issuer), expiration, and — when idp_audience is set — audience, before invoking Lambda. Defense-in-depth: drops unauthenticated and obviously-bad-token probes before they reach broker code. The broker still does its full check (scope, token_use, audience, the full pipeline). When idp_audience is empty (scope-only deployments), APIGW skips audience validation but still enforces signature + issuer + exp; scope enforcement stays broker-side. Recommended on for internet-facing deployments."
+  description = "Enable the API Gateway HTTP API JWT authorizer in front of the broker Lambda. When true, APIGW validates the access token's signature, issuer, and expiration before invoking Lambda — defense-in-depth that drops bad-token probes before they reach broker code. Audience is not pinned at the edge; the broker enforces aud-OR-scope and does the full check. Recommended on for internet-facing deployments. See the README \"Layered JWT defense\" section."
   type        = bool
   default     = false
 }

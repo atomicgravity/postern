@@ -87,7 +87,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `lambda_memory_mb`, `lambda_timeout_seconds`, `lambda_log_retention_days`, `audit_log_retention_days` | AWS-side tunables. |
 | `apigw_access_logs_enabled` | `true` by default. APIGW writes a JSON access log line per request to a separate CloudWatch log group. Independent of the JWT authorizer. |
 | `apigw_access_log_retention_days` | `30`. Retention for the APIGW access log group. |
-| `apigw_jwt_authorizer_enabled` | `false` by default. When `true`, API Gateway validates the bearer JWT (signature, issuer, expiration, audience if `idp_audience` is set) before invoking Lambda; bad tokens get a 401 from APIGW without consuming a Lambda invocation. Layered defense — the broker still does its full check (scope, token_use, etc.). See "Layered JWT defense at API Gateway" below. |
+| `apigw_jwt_authorizer_enabled` | `false` by default. When `true`, API Gateway validates the bearer JWT (signature, issuer, expiration) before invoking Lambda; bad tokens get a 401 from APIGW without consuming a Lambda invocation. Audience is not pinned at the edge — the broker enforces aud-OR-scope. Layered defense — the broker still does its full check (audience, scope, token_use, etc.). See "Layered JWT defense at API Gateway" below. |
 | `tunneling_enabled` | `false` by default. When `true`, the module grants the broker Lambda `iot:OpenTunnel` and passes `POSTERN_TUNNELING_IOT_REGION` + `POSTERN_TUNNELING_DEFAULT_MAX_LIFETIME_MINUTES` env vars so `/ssh/tunnel` mints AWS IoT Secure Tunnels for the firewalled-device path. When `false`, the broker returns 501 on `/ssh/tunnel` and carries no `iot:` permission. See "Tunneling (firewalled-device recovery)" below. |
 | `tunneling_iot_region` | Empty by default. AWS region for the broker's IoT secure-tunneling client; empty resolves to the deployment region. Cross-region operators set this explicitly. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_default_max_lifetime_minutes` | `480` (8 hours) by default. Broker fallback TTL when the engineer omits `--max-lifetime`. AWS caps individual tunnels at 720 (12 hours); the module validation enforces the (0, 720] range. Only consulted when `tunneling_enabled = true`. |
@@ -173,7 +173,7 @@ Device attributes from the Registry (DynamoDB or HTTP) flow into Cedar policy ev
 
 ## Layered JWT defense at API Gateway
 
-The unwrapped broker validates every access token in the broker pipeline (signature, issuer, audience, scope, `token_use`, plus the full Cedar authorization decision). With `apigw_jwt_authorizer_enabled = true`, API Gateway HTTP API additionally validates the JWT's signature, issuer, and audience **before** invoking the broker Lambda — bad tokens get a 401 from APIGW and never burn a Lambda invocation.
+The unwrapped broker validates every access token in the broker pipeline (signature, issuer, audience, scope, `token_use`, plus the full Cedar authorization decision). With `apigw_jwt_authorizer_enabled = true`, API Gateway HTTP API additionally validates the JWT's signature, issuer, and expiration **before** invoking the broker Lambda — bad tokens get a 401 from APIGW and never burn a Lambda invocation.
 
 The trust model is deliberately one-way: the broker does not trust APIGW's parsed claims and re-verifies the token in its own pipeline. APIGW is a pre-filter, not the authority. The broker's behavior is identical whether the authorizer is on or off.
 
@@ -183,14 +183,14 @@ What this protects against:
 - **Lambda billing.** Bad-token probes don't generate Lambda invocations to pay for.
 
 What this does NOT do:
-- **Replace the broker's checks.** Scope, `token_use`, the cert-mint pipeline gates, and AVP authorization all stay broker-side. APIGW does not understand them.
-- **Enforce audience when `idp_audience` is empty.** APIGW will still validate signature, issuer, and expiration in scope-only deployments — but it will not check the `aud` claim (the broker still does, when `idp_required_scope` matches).
+- **Replace the broker's checks.** Audience, scope, `token_use`, the cert-mint pipeline gates, and AVP authorization all stay broker-side. APIGW does not understand them.
+- **Check audience or scope.** APIGW validates signature, issuer, and expiration only. Audience and scope are enforced broker-side as an aud-OR-scope decision; the edge authorizer ANDs its constraints and can't express that, so pinning `aud` there would reject scope-only tokens (client-credentials carry no `aud`).
 
 Routing:
 - Every route — including `/healthz` — is gated by the authorizer when it's on. The Lambda+APIGW deployment doesn't need an unauthenticated `/healthz`: APIGW is HA AWS-managed (no operator probing required) and Lambda's own lifecycle handles function health. The `/healthz` endpoint stays in the broker handler for the long-running `cmd/broker` deployment behind an ALB, where the operator's load-balancer health check configures auth-bypass on its side. Leaving `/healthz` under JWT auth at APIGW shrinks the unauthenticated attack surface here to zero without giving up any operational capability we actually use.
 
 Observability:
-- APIGW access logs land in a separate CloudWatch log group (`/<name_prefix>/apigw-access`), with shorter default retention than the audit log group. Operators query both for incident response: the audit group captures every request the broker saw (including `ssh_cert_denied` for everything that reached the pipeline); the access group captures every request APIGW rejected before the broker saw it (no JWT, expired JWT, wrong issuer, wrong audience). Together they cover every probe of `/ssh/cert`.
+- APIGW access logs land in a separate CloudWatch log group (`/<name_prefix>/apigw-access`), with shorter default retention than the audit log group. Operators query both for incident response: the audit group captures every request the broker saw (including `ssh_cert_denied` for everything that reached the pipeline); the access group captures every request APIGW rejected before the broker saw it (no JWT, expired JWT, wrong issuer). Together they cover every probe of `/ssh/cert`.
 - Log format is JSON, with: `requestId`, `requestTime`, `httpMethod`, `routeKey`, `status`, `protocol`, `responseLength`, `sourceIp`, `userAgent`, `authorizerError`, `authorizerLatency`.
 
 ## Tunneling (firewalled-device recovery)
