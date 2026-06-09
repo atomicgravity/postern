@@ -182,11 +182,18 @@ func (v *OIDCVerifier) VerifyAccessToken(ctx context.Context, accessToken string
 	if claims.TokenUse != "" && claims.TokenUse != "access" {
 		return broker.CallerClaims{}, errors.New("token_use must be access")
 	}
-	if v.audience != "" && !slices.Contains(token.Audience, v.audience) {
-		return broker.CallerClaims{}, errors.New("access token missing required audience")
-	}
-	if v.requiredScope != "" && !hasScope(claims.Scope, claims.SCP, v.requiredScope) {
-		return broker.CallerClaims{}, errors.New("access token missing required scope")
+	// Audience and required-scope match with OR semantics: when both are
+	// configured, a token satisfying either is accepted. A matched* flag is
+	// false whenever its field is unset, so an unconfigured field can never
+	// count as a proof — single-config deployments still gate on their one
+	// configured check, and a verifier with neither configured fails closed
+	// (rejecting every token) rather than fail-open. Cross-app isolation
+	// holds: a token must carry at least one configured proof.
+	matchedAudience := v.audience != "" && slices.Contains(token.Audience, v.audience)
+	matchedScope := v.requiredScope != "" && hasScope(claims.Scope, claims.SCP, v.requiredScope)
+
+	if !matchedAudience && !matchedScope {
+		return broker.CallerClaims{}, errors.New("access token missing required audience or scope")
 	}
 
 	if claims.IssuedAt != 0 {

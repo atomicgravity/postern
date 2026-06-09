@@ -487,7 +487,7 @@ Validation criteria, all of which must pass:
 5. **Audience and/or scope** matches the broker's configuration:
    - If `idp.audience` is configured: the token's `aud` claim must contain or equal it (RFC 9068 IdPs).
    - If `idp.required_scope` is configured: the token's `scope` claim must contain it (Cognito and IdPs that gate via scopes).
-   - If both are configured, both must pass.
+   - If both are configured, **either** match suffices (OR): a token carrying a matching `aud` *or* a matching scope passes. This serves a single IdP whose caller classes differ — e.g. Cognito human tokens carry `aud` (RFC 8707 resource binding) while client-credentials tokens carry only a scope. Cross-app isolation still holds: a token with neither a matching `aud` nor a matching scope is rejected.
    - If neither is configured, the broker fails closed at startup — at least one defense must be active.
 
 #### Principal classes

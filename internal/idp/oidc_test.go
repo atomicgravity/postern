@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -154,11 +155,14 @@ func TestVerifyAccessTokenRejectsMisbuiltTokens(t *testing.T) {
 			wantSub:  "token_use must be access",
 		},
 		{
+			// Audience-only config so a broken aud is the sole proof:
+			// under OR, leaving scope configured would let the matching
+			// scope rescue the token and mask the audience rejection.
 			name:     "audience missing required value",
 			audience: "https://broker.example.com",
-			scope:    "postern/ssh",
+			scope:    "",
 			mutate:   func(c map[string]any) { c["aud"] = []string{"https://wrong.example.com"} },
-			wantSub:  "missing required audience",
+			wantSub:  "missing required audience or scope",
 		},
 		{
 			// Locks that the broker enforces audience against its
@@ -166,18 +170,22 @@ func TestVerifyAccessTokenRejectsMisbuiltTokens(t *testing.T) {
 			// gate (disabled via SkipClientIDCheck). A token whose aud is
 			// the IdP client_id would pass the legacy go-oidc check; it
 			// must still fail Postern's separate audience match.
+			// Audience-only config so the broken aud is the sole proof.
 			name:     "audience is client-id-shaped value",
 			audience: "https://broker.example.com",
-			scope:    "postern/ssh",
+			scope:    "",
 			mutate:   func(c map[string]any) { c["aud"] = []string{"some-other-client-id"} },
-			wantSub:  "missing required audience",
+			wantSub:  "missing required audience or scope",
 		},
 		{
+			// Scope-only config so the broken scope is the sole proof:
+			// under OR, leaving audience configured would let the matching
+			// aud rescue the token and mask the scope rejection.
 			name:     "scope missing required value",
-			audience: "https://broker.example.com",
+			audience: "",
 			scope:    "postern/ssh",
 			mutate:   func(c map[string]any) { c["scope"] = "openid email" },
-			wantSub:  "missing required scope",
+			wantSub:  "missing required audience or scope",
 		},
 		{
 			name:     "iat in the future",
@@ -219,6 +227,336 @@ func TestVerifyAccessTokenRejectsMisbuiltTokens(t *testing.T) {
 				t.Fatalf("VerifyAccessToken() error = %v, want contains %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestVerifyAccessTokenAudienceScopeOR locks the audience/scope OR semantics:
+// when both fields are configured a token satisfying either is accepted, but a
+// token carrying neither configured proof is rejected (cross-app isolation).
+// Single-config deployments still gate on their one configured check, and the
+// OR path never short-circuits the orthogonal validations (token_use, iat,
+// sub, signature).
+func TestVerifyAccessTokenAudienceScopeOR(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	now := time.Now()
+
+	const aud = "https://broker.example.com"
+	const scope = "postern/ssh"
+
+	baseClaims := func() map[string]any {
+		return map[string]any{
+			"iss":       fixture.server.URL,
+			"sub":       "engineer-1234",
+			"email":     "engineer@example.com",
+			"aud":       []string{aud},
+			"scope":     "openid " + scope,
+			"token_use": "access",
+			"iat":       now.Unix(),
+			"exp":       now.Add(time.Hour).Unix(),
+		}
+	}
+
+	cases := []struct {
+		name       string
+		audience   string
+		scope      string
+		mutate     func(map[string]any)
+		signWith   ed25519.PrivateKey // nil → fixture.privateKey
+		wantAccept bool
+		wantSub    string // substring of error when wantAccept is false
+	}{
+		// Audience-only config.
+		{
+			name:       "aud-only/match",
+			audience:   aud,
+			wantAccept: true,
+		},
+		{
+			name:     "aud-only/wrong",
+			audience: aud,
+			mutate:   func(c map[string]any) { c["aud"] = []string{"https://other.example.com"} },
+			wantSub:  "missing required audience or scope",
+		},
+		{
+			name:     "aud-only/absent",
+			audience: aud,
+			mutate:   func(c map[string]any) { delete(c, "aud") },
+			wantSub:  "missing required audience or scope",
+		},
+
+		// Scope-only config.
+		{
+			name:       "scope-only/match",
+			scope:      scope,
+			wantAccept: true,
+		},
+		{
+			name:   "scope-only/absent",
+			scope:  scope,
+			mutate: func(c map[string]any) { delete(c, "scope") },
+			// aud is still present but not configured, so it is not a proof.
+			wantSub: "missing required audience or scope",
+		},
+		{
+			name:    "scope-only/wrong",
+			scope:   scope,
+			mutate:  func(c map[string]any) { c["scope"] = "openid email profile" },
+			wantSub: "missing required audience or scope",
+		},
+
+		// Both configured (OR).
+		{
+			name:       "both/aud-only-present",
+			audience:   aud,
+			scope:      scope,
+			mutate:     func(c map[string]any) { c["scope"] = "openid email" },
+			wantAccept: true, // human / Cognito case
+		},
+		{
+			name:       "both/scope-only-present",
+			audience:   aud,
+			scope:      scope,
+			mutate:     func(c map[string]any) { delete(c, "aud") },
+			wantAccept: true, // machine / Cognito case
+		},
+		{
+			name:       "both/both-present",
+			audience:   aud,
+			scope:      scope,
+			wantAccept: true,
+		},
+		{
+			name:     "both/neither-present",
+			audience: aud,
+			scope:    scope,
+			mutate: func(c map[string]any) {
+				c["aud"] = []string{"https://other.example.com"}
+				c["scope"] = "openid email"
+			},
+			wantSub: "missing required audience or scope", // load-bearing
+		},
+		{
+			name:     "both/aud-absent-scope-absent",
+			audience: aud,
+			scope:    scope,
+			mutate: func(c map[string]any) {
+				delete(c, "aud")
+				delete(c, "scope")
+			},
+			wantSub: "missing required audience or scope",
+		},
+
+		// Cross-app adversary: a token validly issued for another app in a
+		// shared pool (same issuer, different aud AND different scope).
+		{
+			name:     "cross-app/other-app-token",
+			audience: aud,
+			scope:    scope,
+			mutate: func(c map[string]any) {
+				c["aud"] = []string{"https://app-b.example.com"}
+				c["scope"] = "openid app-b/read"
+			},
+			wantSub: "missing required audience or scope",
+		},
+
+		// Audience multi-value.
+		{
+			name:       "aud-multi/match-one-of-many",
+			audience:   aud,
+			mutate:     func(c map[string]any) { c["aud"] = []string{"x", aud, "y"} },
+			wantAccept: true,
+		},
+		{
+			name:     "aud-multi/none-match",
+			audience: aud,
+			mutate:   func(c map[string]any) { c["aud"] = []string{"x", "y"} },
+			wantSub:  "missing required audience or scope",
+		},
+
+		// OR path does not bypass the orthogonal validations: each token
+		// satisfies aud-or-scope but fails one other check.
+		{
+			name:     "or-no-bypass/token_use-id",
+			audience: aud,
+			scope:    scope,
+			mutate:   func(c map[string]any) { c["token_use"] = "id" },
+			wantSub:  "token_use must be access",
+		},
+		{
+			name:     "or-no-bypass/iat-future",
+			audience: aud,
+			scope:    scope,
+			mutate:   func(c map[string]any) { c["iat"] = time.Now().Add(time.Hour).Unix() },
+			wantSub:  "iat is in the future",
+		},
+		{
+			name:     "or-no-bypass/iat-too-old",
+			audience: aud,
+			scope:    scope,
+			mutate: func(c map[string]any) {
+				c["iat"] = time.Now().Add(-25 * time.Hour).Unix()
+				c["exp"] = time.Now().Add(time.Hour).Unix()
+			},
+			wantSub: "exceeds maximum age",
+		},
+		{
+			name:     "or-no-bypass/empty-sub",
+			audience: aud,
+			scope:    scope,
+			mutate:   func(c map[string]any) { c["sub"] = "" },
+			wantSub:  "sub claim is required",
+		},
+		{
+			name:     "or-no-bypass/wrong-signature",
+			audience: aud,
+			scope:    scope,
+			signWith: newOtherEd25519Key(t),
+			wantSub:  "failed to verify signature",
+		},
+
+		// Adversarial: empty-string claims are not proofs.
+		{
+			name:     "or/empty-string-aud-and-scope-claims",
+			audience: aud,
+			scope:    scope,
+			mutate: func(c map[string]any) {
+				c["aud"] = []string{}
+				c["scope"] = ""
+			},
+			wantSub: "missing required audience or scope",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := fixture.newVerifier(t, tc.audience, tc.scope)
+			claims := baseClaims()
+			if tc.mutate != nil {
+				tc.mutate(claims)
+			}
+			signKey := fixture.privateKey
+			if tc.signWith != nil {
+				signKey = tc.signWith
+			}
+			token := fixture.signTokenWith(t, signKey, claims)
+
+			_, err := verifier.VerifyAccessToken(context.Background(), token)
+			if tc.wantAccept {
+				if err != nil {
+					t.Fatalf("VerifyAccessToken() error = %v, want accept", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("VerifyAccessToken() returned nil error, want %q", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("VerifyAccessToken() error = %v, want contains %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestVerifyAccessTokenExactScopePrecision locks exact-element scope matching:
+// no substring or prefix/suffix collisions, and a match found anywhere within a
+// multi-scope string or the scp array.
+func TestVerifyAccessTokenExactScopePrecision(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	now := time.Now()
+
+	base := func() map[string]any {
+		return map[string]any{
+			"iss":       fixture.server.URL,
+			"sub":       "engineer-1234",
+			"token_use": "access",
+			"iat":       now.Unix(),
+			"exp":       now.Add(time.Hour).Unix(),
+		}
+	}
+
+	cases := []struct {
+		name       string
+		mutate     func(map[string]any)
+		wantAccept bool
+	}{
+		{
+			name:   "scope-exact/prefix-collide-readonly",
+			mutate: func(c map[string]any) { c["scope"] = "openid a/readonly" },
+		},
+		{
+			name:   "scope-exact/suffix-collide-read-x",
+			mutate: func(c map[string]any) { c["scope"] = "openid a/read-x" },
+		},
+		{
+			name:       "scope-exact/match-within-multi-scope-string",
+			mutate:     func(c map[string]any) { c["scope"] = "openid a/read x/y" },
+			wantAccept: true,
+		},
+		{
+			name:       "scope-exact/match-within-scp-array",
+			mutate:     func(c map[string]any) { c["scp"] = []any{"openid", "a/read"} },
+			wantAccept: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := fixture.newVerifier(t, "", "a/read")
+			claims := base()
+			tc.mutate(claims)
+			token := fixture.signToken(t, claims)
+
+			_, err := verifier.VerifyAccessToken(context.Background(), token)
+			if tc.wantAccept {
+				if err != nil {
+					t.Fatalf("VerifyAccessToken() error = %v, want accept", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("VerifyAccessToken() returned nil error, want rejection")
+			}
+			if !strings.Contains(err.Error(), "missing required audience or scope") {
+				t.Fatalf("VerifyAccessToken() error = %v, want contains %q", err, "missing required audience or scope")
+			}
+		})
+	}
+}
+
+// TestVerifyAccessTokenFailsClosedWhenNeitherConfigured exercises the runtime
+// fail-closed path that NewOIDCVerifier's construction guard normally prevents:
+// a verifier with both audience and required scope empty rejects every
+// well-formed token (both matched* flags false ⇒ reject). Constructs the struct
+// directly because NewOIDCVerifier refuses a both-empty config.
+func TestVerifyAccessTokenFailsClosedWhenNeitherConfigured(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	provider, err := oidc.NewProvider(context.Background(), fixture.server.URL)
+	if err != nil {
+		t.Fatalf("oidc.NewProvider() error = %v", err)
+	}
+	verifier := &OIDCVerifier{
+		verifier: provider.Verifier(&oidc.Config{
+			SkipClientIDCheck:    true,
+			SupportedSigningAlgs: []string{"EdDSA"},
+		}),
+		now: time.Now,
+	}
+
+	now := time.Now()
+	token := fixture.signToken(t, map[string]any{
+		"iss":       fixture.server.URL,
+		"sub":       "engineer-1234",
+		"aud":       []string{"https://broker.example.com"},
+		"scope":     "openid postern/ssh",
+		"token_use": "access",
+		"iat":       now.Unix(),
+		"exp":       now.Add(time.Hour).Unix(),
+	})
+
+	if _, err := verifier.VerifyAccessToken(context.Background(), token); err == nil {
+		t.Fatal("VerifyAccessToken() returned nil error, want fail-closed rejection")
+	} else if !strings.Contains(err.Error(), "missing required audience or scope") {
+		t.Fatalf("VerifyAccessToken() error = %v, want contains %q", err, "missing required audience or scope")
 	}
 }
 

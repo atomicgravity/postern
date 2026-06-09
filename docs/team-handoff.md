@@ -42,7 +42,17 @@ subcommand, which is a placeholder (`pkg/cliapp/app.go` `placeholderCommand`).
 **Last code-carrying commit:** `c953f4c` — *feat(broker): configure
 principal-class rules via env (Lambda)*.
 
-**Active phase:** client-auth — principal classes for automated callers
+**Phase broker-aud-scope: COMPLETE + gated.** Broker verifier now accepts a
+token matching EITHER configured `idp.audience` OR `idp.required_scope` (was AND);
+fail-closed `matched*` form (a fail-open draft was caught + corrected in review);
+cross-app isolation preserved. Spec `docs/phases/broker-aud-scope/spec.md`,
+decision D-CA-10, docs round-tripped (DESIGN.md/CLAUDE.md=AGENTS.md). Reviewer
+APPROVE (mutation-verified the 25-case security matrix) / architect NON-OBJECTION
+/ tester PASS. `internal/idp/oidc.go` + `oidc_test.go`. No config change. Carries
+O-29/O-30 (optional matrix completeness). Needs a release so the sai operator can
+set `idp_required_scope` and finish M2M wiring.
+
+**Prior phase:** client-auth — principal classes for automated callers
 (OAuth2 client-credentials). Spec: `docs/phases/client-auth/spec.md`.
 Sub-phases A → (B ∥ C) → D, then follow-ons E and F. All complete.
 
