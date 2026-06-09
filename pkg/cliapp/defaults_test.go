@@ -1,12 +1,19 @@
 package cliapp
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atomicgravity/postern/internal/tokenstore"
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 func TestDefaultTokenStore(t *testing.T) {
@@ -84,6 +91,150 @@ func TestDefaultTokenStoreFileDir(t *testing.T) {
 	want := tokenstore.NewFile(filepath.Join(home, ".acme-access", "tokens"))
 	if store != want {
 		t.Fatalf("defaultTokenStore() = %#v, want %#v", store, want)
+	}
+}
+
+// ccIDPServer is a minimal IdP serving OIDC discovery + a client-credentials
+// token endpoint, used to exercise the real defaultAccessToken /
+// defaultLoginRunner closures on the client-credentials branch.
+type ccIDPServer struct {
+	t      *testing.T
+	server *httptest.Server
+}
+
+func newCCIDPServer(t *testing.T) *ccIDPServer {
+	t.Helper()
+	s := &ccIDPServer{t: t}
+	s.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/.well-known/openid-configuration":
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"issuer":                                s.server.URL,
+				"authorization_endpoint":                s.server.URL + "/authorize",
+				"token_endpoint":                        s.server.URL + "/token",
+				"jwks_uri":                              s.server.URL + "/.well-known/jwks.json",
+				"id_token_signing_alg_values_supported": []string{"EdDSA"},
+				"subject_types_supported":               []string{"public"},
+				"response_types_supported":              []string{"code"},
+			})
+		case "/token":
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"access_token": ccTestJWT(t),
+				"token_type":   "Bearer",
+				"expires_in":   3600,
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	return s
+}
+
+func (s *ccIDPServer) URL() string { return s.server.URL }
+func (s *ccIDPServer) Close()      { s.server.Close() }
+
+// ccTestJWT mints an HS256 JWT carrying an exp claim. defaultAccessToken only
+// reads exp (the broker is the real verifier), so the signature is irrelevant.
+func ccTestJWT(t *testing.T) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.HS256, Key: []byte("test-fixture-throwaway-key-32-bytes")},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("jose.NewSigner() error = %v", err)
+	}
+	token, err := jwt.Signed(signer).Claims(map[string]any{"sub": "m2m-sub", "exp": 9999999999}).Serialize()
+	if err != nil {
+		t.Fatalf("Serialize() error = %v", err)
+	}
+	return token
+}
+
+func ccProfile(issuer string) ResolvedProfile {
+	return ResolvedProfile{
+		Name: "svc",
+		Profile: Profile{
+			Broker: "https://broker.example.com",
+			IDP: IDPConfig{
+				Issuer:        issuer,
+				ClientID:      "m2m-client",
+				Audience:      "https://broker.example.com",
+				AudienceParam: DefaultAudienceParam,
+				Grant:         GrantClientCredentials,
+			},
+		},
+	}
+}
+
+// TestDefaultAccessTokenClientCredentialsBypassesStore proves the
+// client-credentials branch mints a fresh token in-memory and never writes the
+// token store: HOME is a temp dir, and after the call no token files exist.
+func TestDefaultAccessTokenClientCredentialsBypassesStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	idp := newCCIDPServer(t)
+	defer idp.Close()
+
+	lookupEnv := mapEnv(map[string]string{"POSTERN_IDP_CLIENT_SECRET": "s3cr3t"})
+	accessToken := defaultAccessToken("postern", "POSTERN", lookupEnv)
+
+	token, err := accessToken(context.Background(), ccProfile(idp.URL()))
+	if err != nil {
+		t.Fatalf("accessToken() error = %v", err)
+	}
+	if token == "" {
+		t.Fatal("accessToken() returned empty token")
+	}
+
+	if entries, err := os.ReadDir(filepath.Join(home, ".postern", "tokens")); err == nil && len(entries) > 0 {
+		t.Fatalf("token store written on client-credentials path: %v", entries)
+	}
+}
+
+// TestDefaultAccessTokenClientCredentialsMissingSecret confirms the actionable
+// error names the env var when the secret is absent.
+func TestDefaultAccessTokenClientCredentialsMissingSecret(t *testing.T) {
+	idp := newCCIDPServer(t)
+	defer idp.Close()
+
+	accessToken := defaultAccessToken("postern", "POSTERN", emptyEnv)
+	_, err := accessToken(context.Background(), ccProfile(idp.URL()))
+	if err == nil {
+		t.Fatal("accessToken() error = nil, want missing-secret error")
+	}
+	if !strings.Contains(err.Error(), "POSTERN_IDP_CLIENT_SECRET") {
+		t.Fatalf("accessToken() error = %v, want it to name POSTERN_IDP_CLIENT_SECRET", err)
+	}
+}
+
+// TestDefaultLoginRunnerClientCredentialsPrintsIdentity confirms login on the
+// client-credentials path validates the credentials (one mint) and prints the
+// client identity, persisting nothing.
+func TestDefaultLoginRunnerClientCredentialsPrintsIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	idp := newCCIDPServer(t)
+	defer idp.Close()
+
+	lookupEnv := mapEnv(map[string]string{"POSTERN_IDP_CLIENT_SECRET": "s3cr3t"})
+	loginRunner := defaultLoginRunner("postern", "POSTERN", lookupEnv)
+
+	var out strings.Builder
+	// NoBrowser is a no-op on this path: it must not error or change behavior.
+	if err := loginRunner(context.Background(), ccProfile(idp.URL()), &out, loginOptions{NoBrowser: true}); err != nil {
+		t.Fatalf("loginRunner() error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Authenticated as client m2m-client") {
+		t.Fatalf("login output = %q, want it to name the client identity", got)
+	}
+
+	if entries, err := os.ReadDir(filepath.Join(home, ".postern", "tokens")); err == nil && len(entries) > 0 {
+		t.Fatalf("token store written on client-credentials login: %v", entries)
 	}
 }
 

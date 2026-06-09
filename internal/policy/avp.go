@@ -88,12 +88,20 @@ func (p *AVPPolicy) Allow(ctx context.Context, request broker.PolicyRequest) err
 
 func contextMap(request broker.PolicyRequest) types.ContextDefinition {
 	attributes := map[string]types.AttributeValue{
-		"source_ip":  &types.AttributeValueMemberString{Value: request.SourceIP},
-		"user_agent": &types.AttributeValueMemberString{Value: request.UserAgent},
-		"request_id": &types.AttributeValueMemberString{Value: request.RequestID},
+		"source_ip":       &types.AttributeValueMemberString{Value: request.SourceIP},
+		"user_agent":      &types.AttributeValueMemberString{Value: request.UserAgent},
+		"request_id":      &types.AttributeValueMemberString{Value: request.RequestID},
+		"principal_class": &types.AttributeValueMemberString{Value: request.Caller.Class},
 	}
 	if !request.Timestamp.IsZero() {
 		attributes["timestamp"] = &types.AttributeValueMemberDatetime{Value: request.Timestamp.UTC().Format(time.RFC3339)}
+	}
+
+	// client_id is present only for tokens that carry it (automated callers);
+	// human tokens identify by sub, so the attribute is omitted rather than
+	// emitted as an empty string a policy might accidentally match.
+	if request.Caller.ClientID != "" {
+		attributes["client_id"] = &types.AttributeValueMemberString{Value: request.Caller.ClientID}
 	}
 
 	// Per-endpoint context overlay (tunnel pipeline injects

@@ -90,11 +90,12 @@ const (
 	DenyReasonMissingNonce = "missing_nonce"
 	DenyReasonInvalidNonce = "invalid_nonce"
 
-	// Tunnel-pipeline denials. `max_lifetime_exceeds_ceiling` rejects
-	// requested TTLs above the 12h AWS ceiling without making an AWS call.
-	// `tunneling_unavailable` surfaces non-quota AWS IoT control-plane
-	// errors; `tunnel_limit_exceeded` maps AWS LimitExceededException so
-	// operators can alert distinctly on quota saturation.
+	// `max_lifetime_exceeds_ceiling` is shared by the tunnel and cert-mint
+	// pipelines for a negative requested lifetime (a request above the ceiling
+	// is clamped, not denied). `tunneling_unavailable` surfaces non-quota AWS
+	// IoT control-plane errors; `tunnel_limit_exceeded` maps AWS
+	// LimitExceededException so operators can alert distinctly on quota
+	// saturation.
 	DenyReasonMaxLifetimeExceedsCeiling = "max_lifetime_exceeds_ceiling"
 	DenyReasonTunnelingUnavailable      = "tunneling_unavailable"
 	DenyReasonTunnelLimitExceeded       = "tunnel_limit_exceeded"
@@ -122,13 +123,19 @@ type HandlerDenial struct {
 // SSHCertIssueRequest is the broker-domain request to mint an SSH certificate.
 // JSON tags pin the wire format on /ssh/cert; the wire and domain shapes
 // intentionally coincide.
+// MaxLifetimeMinutes is an optional requested operator-cert lifetime. Zero or
+// absent means the request accepts the per-class ceiling. The broker clamps a
+// non-zero request down to that ceiling; a negative value is rejected. The
+// field is new in this wire version — older CLIs omit it, so a zero value
+// reproduces the previous always-ceiling behavior.
 type SSHCertIssueRequest struct {
-	AccessToken   string        `json:"-"`
-	DeviceID      string        `json:"device_id"`
-	PrincipalType PrincipalType `json:"principal_type"`
-	PublicKey     string        `json:"public_key"`
-	UserAgent     string        `json:"-"`
-	RemoteAddr    string        `json:"-"`
+	AccessToken        string        `json:"-"`
+	DeviceID           string        `json:"device_id"`
+	PrincipalType      PrincipalType `json:"principal_type"`
+	PublicKey          string        `json:"public_key"`
+	MaxLifetimeMinutes int32         `json:"max_lifetime_minutes,omitempty"`
+	UserAgent          string        `json:"-"`
+	RemoteAddr         string        `json:"-"`
 }
 
 // SSHCertIssueResponse is the broker-domain response from a successful mint.
@@ -137,14 +144,24 @@ type SSHCertIssueResponse struct {
 	CAPubkeyFingerprint string `json:"ca_pubkey_fingerprint"`
 }
 
-// EngineerClaims is the verified-engineer identity returned by TokenVerifier.
-// Raw exposes the full claim set so the Policy layer can read claims the
-// broker domain doesn't itself name.
-type EngineerClaims struct {
-	Subject string
-	Email   string
-	Groups  []string
-	Raw     map[string]any
+// CallerClaims is the verified caller identity returned by TokenVerifier. It
+// covers both human engineers and automated (client-credentials) callers; for
+// machine callers Email and Groups are simply empty while Subject still carries
+// the token's sub. Raw exposes the full claim set so the Policy layer can read
+// claims the broker domain doesn't itself name.
+//
+// Class is the operator-configured principal class the verifier derives from
+// the token claims (the default class when no rule matches); it is the single
+// source of truth consumed by cert TTL, audit, and the Cedar context. ClientID
+// is the standard client_id claim (empty when absent), the operationally useful
+// identifier for automated callers whose sub is not a human.
+type CallerClaims struct {
+	Subject  string
+	Email    string
+	Groups   []string
+	Class    string
+	ClientID string
+	Raw      map[string]any
 }
 
 // DeviceRecord is the resolved device the Registry returns. Serial is the
@@ -159,10 +176,10 @@ type DeviceRecord struct {
 	Attributes map[string]any
 }
 
-// TokenVerifier verifies the engineer's IdP-issued access token and returns
-// the resulting EngineerClaims. The default impl is internal/idp.OIDCVerifier.
+// TokenVerifier verifies the caller's IdP-issued access token and returns
+// the resulting CallerClaims. The default impl is internal/idp.OIDCVerifier.
 type TokenVerifier interface {
-	VerifyAccessToken(context.Context, string) (EngineerClaims, error)
+	VerifyAccessToken(context.Context, string) (CallerClaims, error)
 }
 
 // Registry resolves a caller-supplied device_id to a DeviceRecord keyed on
@@ -229,7 +246,7 @@ type IDGenerator interface {
 // Cedar attribute type; unknown types are dropped.
 type PolicyRequest struct {
 	AccessToken string
-	Engineer    EngineerClaims
+	Caller      CallerClaims
 	Device      DeviceRecord
 	Mode        string
 	SourceIP    string
@@ -239,10 +256,10 @@ type PolicyRequest struct {
 	Context     map[string]any
 }
 
-// RateLimitRequest is the input the broker hands to a RateLimiter. Engineer
-// and Mode key the per-engineer-per-mode counter; the rest is metadata.
+// RateLimitRequest is the input the broker hands to a RateLimiter. Caller
+// and Mode key the per-caller-per-mode counter; the rest is metadata.
 type RateLimitRequest struct {
-	Engineer  EngineerClaims
+	Caller    CallerClaims
 	Device    DeviceRecord
 	Mode      string
 	SourceIP  string
@@ -257,6 +274,13 @@ type RateLimitRequest struct {
 // deny). EngineerGroups records IdP-resolved group memberships at decision
 // time so incident review can reconstruct the policy basis without joining
 // against current IdP state.
+//
+// PrincipalClass records the verifier-derived principal class; it is stamped
+// wherever the caller identity is known (the same sites as EngineerSub) so
+// every authorized / issued row, and every post-identity deny, carries it.
+// Pre-identity denials (invalid token, missing bearer) omit it. ClientID is
+// the token's client_id claim — present for automated callers, empty (and so
+// omitted) for human callers whose useful identifier is EngineerSub/Email.
 type AuditEvent struct {
 	Timestamp      time.Time `json:"timestamp"`
 	Event          string    `json:"event"`
@@ -264,6 +288,8 @@ type AuditEvent struct {
 	EngineerSub    string    `json:"engineer_sub,omitempty"`
 	EngineerEmail  string    `json:"engineer_email,omitempty"`
 	EngineerGroups []string  `json:"engineer_groups,omitempty"`
+	PrincipalClass string    `json:"principal_class,omitempty"`
+	ClientID       string    `json:"client_id,omitempty"`
 	DeviceSerial   string    `json:"device_serial,omitempty"`
 	DeviceIDUsed   string    `json:"device_id_used,omitempty"`
 	PrincipalType  string    `json:"principal_type,omitempty"`

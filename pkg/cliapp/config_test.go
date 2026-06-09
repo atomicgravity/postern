@@ -482,6 +482,47 @@ func TestProfileValidateReturnsSentinels(t *testing.T) {
 	}
 }
 
+// TestProfileValidateGrant exercises the grant field: empty and the two known
+// grants pass; an unknown grant fails with the typed sentinel. The
+// client-credentials grant still requires client_id and one of
+// audience/scopes (the secret is never a YAML field).
+func TestProfileValidateGrant(t *testing.T) {
+	base := func(grant string) Profile {
+		return Profile{
+			Broker: "https://postern.example.com",
+			IDP: IDPConfig{
+				Issuer:   "https://idp.example.com",
+				ClientID: "client-123",
+				Audience: "https://postern.example.com",
+				Grant:    grant,
+			},
+		}
+	}
+
+	for _, grant := range []string{"", GrantAuthorizationCode, GrantClientCredentials} {
+		if err := base(grant).Validate(); err != nil {
+			t.Fatalf("Validate() grant %q error = %v, want nil", grant, err)
+		}
+	}
+
+	if err := base("device_code").Validate(); !errors.Is(err, ErrIDPUnknownGrant) {
+		t.Fatalf("Validate() unknown grant error = %v, want ErrIDPUnknownGrant", err)
+	}
+
+	missingClientID := base(GrantClientCredentials)
+	missingClientID.IDP.ClientID = ""
+	if err := missingClientID.Validate(); !errors.Is(err, ErrIDPClientIDRequired) {
+		t.Fatalf("Validate() client_credentials without client_id error = %v, want ErrIDPClientIDRequired", err)
+	}
+
+	missingBinding := base(GrantClientCredentials)
+	missingBinding.IDP.Audience = ""
+	missingBinding.IDP.Scopes = ""
+	if err := missingBinding.Validate(); !errors.Is(err, ErrIDPAudienceOrScopesRequired) {
+		t.Fatalf("Validate() client_credentials without audience/scopes error = %v, want ErrIDPAudienceOrScopesRequired", err)
+	}
+}
+
 func TestDefaultConfigPathUsesBinaryName(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

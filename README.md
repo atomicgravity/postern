@@ -120,6 +120,33 @@ default:
 
 Precedence is `POSTERN_TOKEN_STORE` env > `token_store` in config > keychain default — the env var wins so you can flip a config-pinned machine back to the keychain for one command. It's opt-in (not an automatic fallback) because the file backend writes your refresh token to disk readable by your own user.
 
+### Automated tools / service accounts
+
+CI jobs, schedulers, and other non-human callers authenticate with an OAuth2 client-credentials (service-account) grant instead of the browser SSO flow. Set `grant: client_credentials` in the profile and point `client_id` at the IdP's service-account (M2M) app client:
+
+```yaml
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX
+    client_id: <m2m-app-client-id>
+    audience: https://postern.example.com   # or scopes:
+    grant: client_credentials
+```
+
+The client **secret is never read from the config file** — it comes only from the `POSTERN_IDP_CLIENT_SECRET` environment variable:
+
+```sh
+export POSTERN_IDP_CLIENT_SECRET=...        # service-account secret; keep it out of YAML
+postern login                               # validates the creds, prints the client identity
+postern mint widget-042                       # browserless; re-mints on demand
+ssh widget-042
+```
+
+This path is browserless (no callback port, no keychain) and caches no token: each invocation re-mints a fresh access token from the client_id + secret, so there's no refresh token and nothing is written to the token store. `postern login` is a credential check that prints the client identity; it persists nothing.
+
+On the broker side the operator authorizes and audits these automated callers distinctly from humans. The broker classifies each caller into a **principal class** purely from the verified token's claims (no identity database, no live IdP lookup), exposes the class and the issuing `client_id` to policy, and can bound their certificate TTL per class — so a policy might, for example, let one specific service account mint only from a fixed source IP while denying all other machine callers. See [`DESIGN.md`](DESIGN.md) ("Principal classes") and the broker config's `idp.principal_classes` block.
+
 ### Firewalled devices (tunneling)
 
 For devices you can't reach on the LAN — behind a customer firewall, NAT, or mobile network — Postern tunnels through AWS IoT Secure Tunneling. Three entry points:
@@ -152,12 +179,12 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 |---|---|
 | `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
 | `postern login [--no-browser] [--callback-port <n>]` | SSO + cache access / refresh tokens (`--no-browser` for headless / remote hosts) |
-| `postern ssh [--user <name>] [--tunnel] <device> [user@]<host> [...]` | SSH with cert auto-mint + reuse |
-| `postern scp [--user <name>] [--tunnel] <device> <src> <dst> [...]` | scp with cert auto-mint + reuse |
+| `postern ssh [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> [user@]<host> [...]` | SSH with cert auto-mint + reuse |
+| `postern scp [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> <src> <dst> [...]` | scp with cert auto-mint + reuse |
 | `postern tunnel <device> [--user <name>] [--max-lifetime <dur>] [--port-only]` | Hold-open tunnel for VSCode-remote / rsync / git / multi-session workflows |
 | `postern add-host <device> --ip <ip> [--user <name>] [--port <n>]` | Register a device in `~/.postern/ssh.conf` (and mint a fresh cert) |
 | `postern remove-host <device>` | Drop a device's managed stanza |
-| `postern mint <device>` | Force-mint a fresh cert (ad-hoc / scripted) |
+| `postern mint <device> [--cert-max-lifetime <dur>]` | Force-mint a fresh cert (ad-hoc / scripted) |
 | `postern timefix <device> [--ip <addr>] [--tunnel] [--quiet]` | Repair a device's clock |
 | `postern cache ls` | List cached cert entries |
 | `postern cache prune [--dry-run]` | Remove expired entries |
@@ -165,6 +192,8 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 | `postern version` | Print version info |
 
 The `--user` flag follows a single precedence rule across `add-host`, `tunnel`, `ssh`, and `scp`: explicit `--user` flag > persistent stanza's User (set via a prior `add-host --user`) > profile `default_ssh_user` from `~/.postern/config.yaml` > built-in `engineer` fallback. For `postern ssh` / `postern scp` specifically, you can also use the natural `user@host` form in passthrough args (or `-l <user>` for ssh, `-o User=<user>` for scp); postern detects engineer-supplied user-info and stays out of the way so OpenSSH's native parser handles it.
+
+Two lifetime flags exist and control different things — don't confuse them. `--cert-max-lifetime <dur>` (on `mint` / `ssh` / `scp`) requests a shorter **certificate** TTL; the broker clamps it down to its own per-class ceiling (there is no client-side cap, and the broker never widens past the request). `--max-lifetime <dur>` (on `tunnel`, and on `ssh` / `scp` with `--tunnel`) bounds the **tunnel** lifetime instead, and is capped at 12h by the AWS IoT ceiling. On a single `ssh --tunnel` invocation the two are independent and map to separate requests. Omitting `--cert-max-lifetime` leaves the cert TTL at whatever the broker's per-class default resolves to (today's behavior).
 
 ## Setting it up
 

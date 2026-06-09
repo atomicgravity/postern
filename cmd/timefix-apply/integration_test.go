@@ -46,7 +46,7 @@ func TestIntegrationBrokerMintsTimePayloadVerifierAccepts(t *testing.T) {
 	// signed `now` value is deterministic and we can assert on it.
 	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
 	pipelineDeps := broker.PipelineDeps{
-		TokenVerifier: integrationTokenVerifier{claims: broker.EngineerClaims{Subject: "test-engineer", Email: "engineer@example.com"}},
+		TokenVerifier: integrationTokenVerifier{claims: broker.CallerClaims{Subject: "test-engineer", Email: "engineer@example.com"}},
 		Registry:      integrationRegistry{device: broker.DeviceRecord{Serial: "SERIAL123"}},
 		Policy:        integrationPolicy{},
 		RateLimiter:   integrationRateLimiter{},
@@ -219,10 +219,10 @@ func TestIntegrationBrokerMintsTimePayloadVerifierAccepts(t *testing.T) {
 // the broker pipeline runs through to Sign.
 
 type integrationTokenVerifier struct {
-	claims broker.EngineerClaims
+	claims broker.CallerClaims
 }
 
-func (v integrationTokenVerifier) VerifyAccessToken(context.Context, string) (broker.EngineerClaims, error) {
+func (v integrationTokenVerifier) VerifyAccessToken(context.Context, string) (broker.CallerClaims, error) {
 	return v.claims, nil
 }
 

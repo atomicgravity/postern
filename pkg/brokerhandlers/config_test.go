@@ -548,6 +548,74 @@ func TestLoadResolvedConfigRejectsNonPositiveRateLimit(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsNonPositiveClassTTL locks that a per-class cert-TTL
+// ceiling must be a positive duration, mirroring the operator-default check.
+func TestValidateRejectsNonPositiveClassTTL(t *testing.T) {
+	config := Config{
+		Listen:    ListenConfig{Addr: ":8080"},
+		IDP:       IDPConfig{Issuer: "https://idp.example.com", Audience: "https://broker.example.com"},
+		Signer:    SignerConfig{KMSKeyARN: "arn:aws:kms:us-west-2:123:key/file"},
+		Registry:  RegistryConfig{DynamoDBTable: "devices-file"},
+		RateLimit: RateLimitConfig{DynamoDBTable: "ratelimit-file", Limit: 60, Window: Duration(time.Minute)},
+		Audit:     AuditConfig{CloudWatchLogGroup: "/postern/audit-file"},
+		Policy:    PolicyConfig{AVPPolicyStoreID: "policy-file"},
+		CertTTL: CertTTLConfig{
+			Operator: Duration(12 * time.Hour),
+			ByClass:  map[string]Duration{"machine": Duration(0)},
+		},
+	}
+	err := config.Validate()
+	if err == nil {
+		t.Fatal("Validate() returned nil error")
+	}
+	if !errors.Is(err, ErrCertTTLClassPositive) {
+		t.Fatalf("Validate() error = %v, want ErrCertTTLClassPositive", err)
+	}
+}
+
+// TestLoadResolvedConfigParsesByClassTTL locks that cert_ttl.by_class parses
+// per-class ceilings while the operator default stays the fallback for
+// unmapped classes.
+func TestLoadResolvedConfigParsesByClassTTL(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, `
+idp:
+  issuer: https://idp.example.com
+  audience: https://broker.example.com
+signer:
+  kms_key_arn: arn:aws:kms:us-west-2:123:key/file
+registry:
+  dynamodb_table: devices-file
+ratelimit:
+  dynamodb_table: ratelimit-file
+audit:
+  cloudwatch_log_group: /postern/audit-file
+policy:
+  avp_policy_store_id: policy-file
+cert_ttl:
+  operator: 12h
+  by_class:
+    machine: 1h
+    user: 8h
+`)
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: mapEnv(map[string]string{})})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if got, want := resolved.Config.CertTTL.Operator.Duration(), 12*time.Hour; got != want {
+		t.Fatalf("operator ttl = %s, want %s", got, want)
+	}
+	if got, want := resolved.Config.CertTTL.ByClass["machine"].Duration(), time.Hour; got != want {
+		t.Fatalf("machine ttl = %s, want %s", got, want)
+	}
+	if got, want := resolved.Config.CertTTL.ByClass["user"].Duration(), 8*time.Hour; got != want {
+		t.Fatalf("user ttl = %s, want %s", got, want)
+	}
+	if _, ok := resolved.Config.CertTTL.ByClass["robot"]; ok {
+		t.Fatal("unexpected by_class entry for unmapped class robot")
+	}
+}
+
 // TestPrintResolvedConfigIncludesSources locks the --print-config output
 // shape: the top-level config: block is emitted before the sources: block, so
 // operators can rely on stable diffable output across runs. yaml.v3 follows
@@ -1086,6 +1154,224 @@ func TestLoadResolvedConfigTunnelingThingNameFormatInvalid(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want ErrTunnelingThingNameFormatInvalid", err)
 			}
 		})
+	}
+}
+
+// principalClassConfig builds a minimal valid broker config whose idp block
+// carries the supplied principal_classes YAML (already indented under idp).
+func principalClassConfig(idpExtra string) string {
+	return `
+idp:
+  issuer: https://idp.example.com
+  audience: https://broker.example.com
+` + idpExtra + `signer:
+  kms_key_arn: arn:aws:kms:us-west-2:123:key/file
+registry:
+  dynamodb_table: devices-file
+ratelimit:
+  dynamodb_table: ratelimit-file
+audit:
+  cloudwatch_log_group: /postern/audit-file
+policy:
+  avp_policy_store_id: policy-file
+`
+}
+
+func TestLoadResolvedConfigPrincipalClassesDefaultFill(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    rules:
+      - class: machine
+        claim_absent: username
+`))
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	classes := resolved.Config.IDP.PrincipalClasses
+	if classes == nil {
+		t.Fatal("principal_classes block is nil")
+	}
+	if got, want := classes.Default, DefaultPrincipalClass; got != want {
+		t.Fatalf("default class = %q, want %q (default-fill)", got, want)
+	}
+	if len(classes.Rules) != 1 || classes.Rules[0].Class != "machine" {
+		t.Fatalf("rules = %#v, want one machine rule", classes.Rules)
+	}
+}
+
+func TestLoadResolvedConfigPrincipalClassDefaultEnvOverride(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    default: user
+    rules:
+      - class: machine
+        claim_absent: username
+`))
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{
+		Path:      configPath,
+		LookupEnv: mapEnv(map[string]string{"POSTERN_IDP_PRINCIPAL_CLASS_DEFAULT": "robot"}),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if got, want := resolved.Config.IDP.PrincipalClasses.Default, "robot"; got != want {
+		t.Fatalf("default class = %q, want %q (env override)", got, want)
+	}
+	if got, want := resolved.Sources["idp.principal_classes.default"], "POSTERN_IDP_PRINCIPAL_CLASS_DEFAULT"; got != want {
+		t.Fatalf("default source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadResolvedConfigPrincipalClassesFromEnv(t *testing.T) {
+	// The Lambda deployment mounts no config file, so the structured rule list
+	// must be configurable via POSTERN_IDP_PRINCIPAL_CLASSES (JSON or YAML).
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{
+		Candidates: []string{filepath.Join(t.TempDir(), "missing.yaml")},
+		LookupEnv: mapEnv(map[string]string{
+			"POSTERN_IDP_ISSUER":                 "https://idp.example.com",
+			"POSTERN_IDP_REQUIRED_SCOPE":         "postern/ssh",
+			"POSTERN_SIGNER_KMS_KEY_ARN":         "arn:aws:kms:us-west-2:123:key/env",
+			"POSTERN_REGISTRY_DYNAMODB_TABLE":    "devices-env",
+			"POSTERN_RATELIMIT_DYNAMODB_TABLE":   "ratelimit-env",
+			"POSTERN_AUDIT_CLOUDWATCH_LOG_GROUP": "/postern/audit-env",
+			"POSTERN_POLICY_AVP_POLICY_STORE_ID": "policy-env",
+			"POSTERN_IDP_PRINCIPAL_CLASSES":      `{"default":"user","rules":[{"class":"machine","claim_absent":"username"}]}`,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+
+	classes := resolved.Config.IDP.PrincipalClasses
+	if classes == nil {
+		t.Fatal("PrincipalClasses is nil; env block was not parsed")
+	}
+	if got, want := classes.Default, "user"; got != want {
+		t.Fatalf("default class = %q, want %q", got, want)
+	}
+	if len(classes.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(classes.Rules))
+	}
+	if got := classes.Rules[0]; got.Class != "machine" || got.ClaimAbsent != "username" {
+		t.Fatalf("rule = %+v, want class=machine claim_absent=username", got)
+	}
+	if got, want := resolved.Sources["idp.principal_classes"], "POSTERN_IDP_PRINCIPAL_CLASSES"; got != want {
+		t.Fatalf("source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadResolvedConfigRejectsInvalidPrincipalClassesEnv(t *testing.T) {
+	// Rules supplied via the env var go through the same validation as a
+	// file-provided block — a rule with two predicates is rejected.
+	_, err := LoadResolvedConfig(LoadConfigOptions{
+		Candidates: []string{filepath.Join(t.TempDir(), "missing.yaml")},
+		LookupEnv: mapEnv(map[string]string{
+			"POSTERN_IDP_ISSUER":                 "https://idp.example.com",
+			"POSTERN_IDP_REQUIRED_SCOPE":         "postern/ssh",
+			"POSTERN_SIGNER_KMS_KEY_ARN":         "arn:aws:kms:us-west-2:123:key/env",
+			"POSTERN_REGISTRY_DYNAMODB_TABLE":    "devices-env",
+			"POSTERN_RATELIMIT_DYNAMODB_TABLE":   "ratelimit-env",
+			"POSTERN_AUDIT_CLOUDWATCH_LOG_GROUP": "/postern/audit-env",
+			"POSTERN_POLICY_AVP_POLICY_STORE_ID": "policy-env",
+			"POSTERN_IDP_PRINCIPAL_CLASSES":      `{"rules":[{"class":"machine","claim_absent":"username","scope_contains":"x"}]}`,
+		}),
+	})
+	if !errors.Is(err, ErrPrincipalClassRulePredicate) {
+		t.Fatalf("error = %v, want ErrPrincipalClassRulePredicate", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsUnknownKeyPrincipalClassesEnv(t *testing.T) {
+	// A typo'd `default` key would be silently dropped by a lenient decoder,
+	// reverting every caller to the "user" default without an error. Strict
+	// decoding rejects it. (A typo'd predicate key is already caught by rule
+	// validation; this covers the keys validation can't see.)
+	_, err := LoadResolvedConfig(LoadConfigOptions{
+		Candidates: []string{filepath.Join(t.TempDir(), "missing.yaml")},
+		LookupEnv: mapEnv(map[string]string{
+			"POSTERN_IDP_ISSUER":                 "https://idp.example.com",
+			"POSTERN_IDP_REQUIRED_SCOPE":         "postern/ssh",
+			"POSTERN_SIGNER_KMS_KEY_ARN":         "arn:aws:kms:us-west-2:123:key/env",
+			"POSTERN_REGISTRY_DYNAMODB_TABLE":    "devices-env",
+			"POSTERN_RATELIMIT_DYNAMODB_TABLE":   "ratelimit-env",
+			"POSTERN_AUDIT_CLOUDWATCH_LOG_GROUP": "/postern/audit-env",
+			"POSTERN_POLICY_AVP_POLICY_STORE_ID": "policy-env",
+			"POSTERN_IDP_PRINCIPAL_CLASSES":      `{"defualt":"robot","rules":[{"class":"machine","claim_absent":"username"}]}`,
+		}),
+	})
+	if err == nil {
+		t.Fatal("LoadResolvedConfig() error = nil, want an error for the unknown key \"defualt\"")
+	}
+	if !strings.Contains(err.Error(), "POSTERN_IDP_PRINCIPAL_CLASSES") {
+		t.Fatalf("error = %v, want it to name the env var", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsMultiPredicateRule(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    rules:
+      - class: machine
+        claim_absent: username
+        scope_contains: postern/m2m
+`))
+
+	_, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if !errors.Is(err, ErrPrincipalClassRulePredicate) {
+		t.Fatalf("error = %v, want ErrPrincipalClassRulePredicate", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsRuleWithNoPredicate(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    rules:
+      - class: machine
+`))
+
+	_, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if !errors.Is(err, ErrPrincipalClassRulePredicate) {
+		t.Fatalf("error = %v, want ErrPrincipalClassRulePredicate", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsEmptyClassName(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    rules:
+      - class: ""
+        claim_absent: username
+`))
+
+	_, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if !errors.Is(err, ErrPrincipalClassNameEmpty) {
+		t.Fatalf("error = %v, want ErrPrincipalClassNameEmpty", err)
+	}
+}
+
+func TestLoadResolvedConfigRejectsOverlongClassName(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(`  principal_classes:
+    rules:
+      - class: `+strings.Repeat("x", MaxPrincipalClassRunes+1)+`
+        claim_absent: username
+`))
+
+	_, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if !errors.Is(err, ErrPrincipalClassNameTooLong) {
+		t.Fatalf("error = %v, want ErrPrincipalClassNameTooLong", err)
+	}
+}
+
+// TestLoadResolvedConfigAbsentPrincipalClassesBlock locks back-compat: a config
+// with no principal_classes block loads cleanly and leaves the block nil so the
+// verifier classifies every caller as the default class.
+func TestLoadResolvedConfigAbsentPrincipalClassesBlock(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, principalClassConfig(""))
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if resolved.Config.IDP.PrincipalClasses != nil {
+		t.Fatalf("principal_classes = %#v, want nil when block absent", resolved.Config.IDP.PrincipalClasses)
 	}
 }
 

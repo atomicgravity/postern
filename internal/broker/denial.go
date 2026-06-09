@@ -18,9 +18,11 @@ func denialTemplate(engineerCtx engineerContext) AuditEvent {
 		JTI:            engineerCtx.JTI,
 		SourceIP:       engineerCtx.SourceIP,
 		UserAgent:      engineerCtx.UserAgent,
-		EngineerSub:    engineerCtx.Engineer.Subject,
-		EngineerEmail:  engineerCtx.Engineer.Email,
-		EngineerGroups: engineerCtx.Engineer.Groups,
+		EngineerSub:    engineerCtx.Caller.Subject,
+		EngineerEmail:  engineerCtx.Caller.Email,
+		EngineerGroups: engineerCtx.Caller.Groups,
+		PrincipalClass: engineerCtx.Caller.Class,
+		ClientID:       engineerCtx.Caller.ClientID,
 	}
 }
 

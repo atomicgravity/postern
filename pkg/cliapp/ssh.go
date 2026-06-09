@@ -24,6 +24,7 @@ func sshCommand(rt runtime) *cobra.Command {
 	var refresh bool
 	var tunnel bool
 	var maxLifetime time.Duration
+	var certMaxLifetime time.Duration
 	var user string
 	var verbose bool
 
@@ -39,11 +40,12 @@ func sshCommand(rt runtime) *cobra.Command {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSSH(cmd, rt, args, sshOptions{
-				Refresh:     refresh,
-				Tunnel:      tunnel,
-				MaxLifetime: maxLifetime,
-				User:        user,
-				Verbose:     verbose,
+				Refresh:         refresh,
+				Tunnel:          tunnel,
+				MaxLifetime:     maxLifetime,
+				CertMaxLifetime: certMaxLifetime,
+				User:            user,
+				Verbose:         verbose,
 			})
 		},
 	}
@@ -55,6 +57,7 @@ func sshCommand(rt runtime) *cobra.Command {
 	command.Flags().BoolVar(&refresh, flagRefresh, false, "force a fresh cert mint even if the cache has a valid one")
 	command.Flags().BoolVar(&tunnel, flagTunnel, false, "route through the AWS IoT Secure Tunneling backend rather than direct LAN")
 	command.Flags().DurationVar(&maxLifetime, flagMaxLifetime, 0, "engineer-requested tunnel TTL (e.g. 30m, 4h; capped at 12h by AWS); zero means use the broker default")
+	command.Flags().DurationVar(&certMaxLifetime, flagCertMaxLifetime, 0, "engineer-requested certificate TTL (e.g. 30m, 4h); zero means use the broker default; the broker clamps it to its per-class ceiling")
 	command.Flags().StringVar(&user, flagUser, "", "override the ssh user (defaults to the persistent <device> stanza's User if registered, else the profile default)")
 	command.Flags().BoolVarP(&verbose, flagVerbose, "v", false, "log cert-mint progress and the ssh invocation argv to stderr")
 
@@ -62,11 +65,12 @@ func sshCommand(rt runtime) *cobra.Command {
 }
 
 type sshOptions struct {
-	Refresh     bool
-	Tunnel      bool
-	MaxLifetime time.Duration
-	User        string
-	Verbose     bool
+	Refresh         bool
+	Tunnel          bool
+	MaxLifetime     time.Duration
+	CertMaxLifetime time.Duration
+	User            string
+	Verbose         bool
 }
 
 func runSSH(cmd *cobra.Command, rt runtime, args []string, options sshOptions) error {
@@ -76,8 +80,13 @@ func runSSH(cmd *cobra.Command, rt runtime, args []string, options sshOptions) e
 	}
 	passthrough := args[1:]
 
+	certMaxLifetimeMinutes, err := certLifetimeMinutesFromDuration(options.CertMaxLifetime)
+	if err != nil {
+		return err
+	}
+
 	if options.Tunnel {
-		return runTunneledSSH(cmd, rt, deviceID, passthrough, options)
+		return runTunneledSSH(cmd, rt, deviceID, passthrough, certMaxLifetimeMinutes, options)
 	}
 
 	profile, err := rt.profileResolver(cmd)
@@ -90,7 +99,7 @@ func runSSH(cmd *cobra.Command, rt runtime, args []string, options sshOptions) e
 		return err
 	}
 
-	if err := ensureFreshCert(cmd, rt, store, profile, deviceID, options.Refresh, options.Verbose); err != nil {
+	if err := ensureFreshCert(cmd, rt, store, profile, deviceID, certMaxLifetimeMinutes, options.Refresh, options.Verbose); err != nil {
 		return err
 	}
 
@@ -110,13 +119,13 @@ func runSSH(cmd *cobra.Command, rt runtime, args []string, options sshOptions) e
 // runTunneledSSH executes the --tunnel branch. Proxy lifetime is bounded by
 // the ssh subprocess — ssh exit (clean or ctx cancel) closes and waits the
 // proxy so no WebSocket goroutines outlive the session.
-func runTunneledSSH(cmd *cobra.Command, rt runtime, deviceID string, passthrough []string, options sshOptions) error {
+func runTunneledSSH(cmd *cobra.Command, rt runtime, deviceID string, passthrough []string, certMaxLifetimeMinutes int32, options sshOptions) error {
 	profile, err := rt.profileResolver(cmd)
 	if err != nil {
 		return err
 	}
 
-	dial, err := tunnelDial(cmd, rt, deviceID, options.MaxLifetime, options.Refresh, options.Verbose)
+	dial, err := tunnelDial(cmd, rt, deviceID, options.MaxLifetime, certMaxLifetimeMinutes, options.Refresh, options.Verbose)
 	if err != nil {
 		return err
 	}

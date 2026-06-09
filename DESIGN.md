@@ -490,6 +490,31 @@ Validation criteria, all of which must pass:
    - If both are configured, both must pass.
    - If neither is configured, the broker fails closed at startup — at least one defense must be active.
 
+#### Principal classes
+
+Beyond verifying the token, the broker classifies each caller into a **principal class** so authorization, certificate lifetime, and audit can treat automated callers differently from humans. The class is inferred purely from claims already present in the verified access token — there is no identity database and no live IdP lookup. Operators configure an ordered list of first-match rules; each rule maps a claim predicate (a claim being present, absent, equal to a value, or a scope being present) to a class name, with a default class when no rule matches. The default configuration classifies every caller as a human user, so deployments that don't need the distinction are unaffected.
+
+The mechanism accommodates how different providers mark machine-to-machine tokens. Some providers emit a positive marker (a grant-type claim or a custom claim/scope granted only to service-account clients); others, notably Cognito, emit no positive machine marker, so the distinguishing signal is the *absence* of a user-only claim (such as the user's username) on a client-credentials token. Supporting both presence and absence predicates lets one generic OIDC verifier classify either family without a provider-specific implementation.
+
+The class is derived once, by the verifier, and becomes the single source of truth. The broker uses it to bound the certificate validity window by a per-class ceiling, to stamp the class (and, for automated callers, the issuing client identifier) onto every audit row, and to supply the class and client identifier to the Policy layer as request context. The Policy layer does not re-derive the class; it consumes the broker's classification as a trusted input, the same way it consumes broker-resolved device attributes. This keeps the lifetime, audit, and policy views of "who is calling" from drifting.
+
+Certificate lifetime follows a propose-and-gate model. The caller may request a lifetime; the broker clamps it to the per-class ceiling and supplies the resolved value to the Policy layer as request context, so policy can tighten it further per fleet, class, or client. The Policy layer can only deny, never widen: the applied window never exceeds the broker's per-class ceiling, and the usual clock-skew padding still applies. This mirrors how the tunnel pipeline already gates a requested tunnel lifetime through policy context. The Policy layer returns only an allow/deny decision, so it never names a lifetime the broker reads back — it gates a value the broker proposes.
+
+The class is delivered to the Policy layer as request **context**, not as a distinct principal entity type. Under token-based authorization the principal entity type is fixed by the policy service's identity source, not chosen by the broker per request, and both supported identity-source flavors map a token to the same principal type. Expressing the class as a context attribute is uniform across identity sources, requires no identity-source change, and keeps the class a broker-owned input consistent with its role as the single source of truth. Policies branch on the class and client identifier through context conditions.
+
+```mermaid
+flowchart LR
+  T[Verified access token] --> R{First-match<br/>claim rule}
+  R -->|match| C[principal_class]
+  R -->|no match| D[default class]
+  C --> TTL[per-class cert TTL]
+  C --> AUD[audit row]
+  C --> CTX[policy context.principal_class]
+  D --> TTL
+  D --> AUD
+  D --> CTX
+```
+
 Authorization (who is allowed to do what) is a separate concern handled by the `Policy` interface below.
 
 ### Authorization policy
@@ -507,6 +532,9 @@ PolicyRequest {
     SourceIP    string         // request source IP for context-aware policies
     UserAgent   string
     RequestID   string
+    // Plus broker-derived context: principal_class, client_id (for automated
+    // callers), and the clamped requested certificate lifetime — surfaced to
+    // the impl as policy context, not as typed principal fields.
 }
 ```
 
@@ -527,7 +555,7 @@ The broker per-request call passes:
 - **Action** — `Postern::Action::"MintOperatorCert"`, `"MintTimefixCert"`, or `"OpenTunnel"`, based on the request endpoint.
 - **Resource** — `Postern::Device` entity with the canonical hardware serial as ID.
 - **Entities** — additional entity attributes for the device (fleet, friendly id, owner team, environment, anything else the Registry record carries) so policies can reference them.
-- **Context** — request-level data (source IP, request time, user agent) so policies can express IP allowlists, time-of-day windows, etc.
+- **Context** — request-level data so policies can express IP allowlists, time-of-day windows, per-class rules, etc. Includes `source_ip`, request time, and user agent; the broker-derived `principal_class` and (for automated callers) `client_id`; the clamped `requested_cert_ttl_minutes` for the cert-mint actions; and `requested_max_lifetime_minutes` for the tunnel action. These let a policy branch on caller class and client, and tighten certificate or tunnel lifetime below the broker's per-class ceiling.
 
 A starter Cedar policy:
 
@@ -629,6 +657,8 @@ Subsequent commands use the cached access token until it is close to its JWT `ex
 Recommended IdP-side TTLs: **access token = 1 hour, refresh token = 24 hours, with refresh-token rotation enabled.** Engineers run `postern login` once per workday (browser SSO, MFA if configured), refresh their access token silently in the background as needed, and re-auth the next morning. Cognito's defaults (especially the 30-day refresh) are too long for this use case; the Cognito sample under `examples/` sets these explicitly. Refresh-token rotation defends against a leaked refresh token by invalidating it on the next legitimate refresh.
 
 The token entries default to the OS keychain; on hosts without a reachable keychain the engineer selects an on-disk file backend instead — see *Token storage* below.
+
+Automated callers (CI jobs, service accounts) skip the browser flow entirely. Their profile sets `grant: client_credentials` and the CLI obtains an access token directly from the IdP's token endpoint, supplying the client secret from the environment — never the config file. This path is browserless and keeps no cached refresh token: the credentials re-mint an access token on demand whenever the cached one nears expiry. The resulting token carries the same `aud`/`scope` claims the broker validates, and the broker classifies the caller as an automated principal class from its claims (see *Principal classes*).
 
 #### Callback URL strategy
 

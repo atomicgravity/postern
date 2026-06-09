@@ -450,6 +450,104 @@ func TestMintRegisteredBranchAfterAddHostNoMint(t *testing.T) {
 // rootWithMintForTest assembles a minimal cobra root carrying just the mint
 // subcommand. Matches the pattern used by rootWithSSHForTest /
 // rootWithLoginForTest in sibling test files.
+// TestMintCertMaxLifetimePopulatesRequest covers the --cert-max-lifetime
+// flag: a 1h request lands in the broker request as MaxLifetimeMinutes=60.
+func TestMintCertMaxLifetimePopulatesRequest(t *testing.T) {
+	cacheDir := t.TempDir()
+	ca := newMintTestCA(t)
+	deviceID := "device-1234"
+
+	var gotRequest broker.SSHCertIssueRequest
+	rt := newRuntimeForTest(Options{LookupEnv: emptyEnv})
+	rt.profileResolver = func(*cobra.Command) (ResolvedProfile, error) {
+		return ResolvedProfile{Name: "default", Profile: Profile{Broker: "https://broker.example.com"}}, nil
+	}
+	rt.openCertStore = openTestStore(cacheDir)
+	rt.accessToken = func(context.Context, ResolvedProfile) (string, error) {
+		return "access-token", nil
+	}
+	rt.sshCertRequester = func(_ context.Context, _ ResolvedProfile, _ string, request broker.SSHCertIssueRequest) (broker.SSHCertIssueResponse, error) {
+		gotRequest = request
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), deviceID, time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}, nil
+	}
+	root := rootWithMintForTest(rt, nil)
+
+	if err := execute(context.Background(), root, "mint", "--cert-max-lifetime", "1h", deviceID); err != nil {
+		t.Fatalf("Run(mint --cert-max-lifetime) error = %v", err)
+	}
+
+	if got, want := gotRequest.MaxLifetimeMinutes, int32(60); got != want {
+		t.Fatalf("request.MaxLifetimeMinutes = %d, want %d", got, want)
+	}
+}
+
+// TestMintCertMaxLifetimeOmittedLeavesZero covers the default: with no
+// --cert-max-lifetime the request carries MaxLifetimeMinutes=0 so the
+// broker substitutes its per-class ceiling (preserves prior behavior).
+func TestMintCertMaxLifetimeOmittedLeavesZero(t *testing.T) {
+	cacheDir := t.TempDir()
+	ca := newMintTestCA(t)
+	deviceID := "device-1234"
+
+	var gotRequest broker.SSHCertIssueRequest
+	rt := newRuntimeForTest(Options{LookupEnv: emptyEnv})
+	rt.profileResolver = func(*cobra.Command) (ResolvedProfile, error) {
+		return ResolvedProfile{Name: "default", Profile: Profile{Broker: "https://broker.example.com"}}, nil
+	}
+	rt.openCertStore = openTestStore(cacheDir)
+	rt.accessToken = func(context.Context, ResolvedProfile) (string, error) {
+		return "access-token", nil
+	}
+	rt.sshCertRequester = func(_ context.Context, _ ResolvedProfile, _ string, request broker.SSHCertIssueRequest) (broker.SSHCertIssueResponse, error) {
+		gotRequest = request
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), deviceID, time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}, nil
+	}
+	root := rootWithMintForTest(rt, nil)
+
+	if err := execute(context.Background(), root, "mint", deviceID); err != nil {
+		t.Fatalf("Run(mint) error = %v", err)
+	}
+
+	if got := gotRequest.MaxLifetimeMinutes; got != 0 {
+		t.Fatalf("request.MaxLifetimeMinutes = %d, want 0 (omitted)", got)
+	}
+}
+
+// TestMintCertMaxLifetimeNegativeRejected covers the client-side guard: a
+// negative --cert-max-lifetime fails before any broker round-trip. There
+// is no client-side maximum — the broker clamps positive values.
+func TestMintCertMaxLifetimeNegativeRejected(t *testing.T) {
+	cacheDir := t.TempDir()
+	deviceID := "device-1234"
+
+	brokerCalls := 0
+	rt := newRuntimeForTest(Options{LookupEnv: emptyEnv})
+	rt.profileResolver = func(*cobra.Command) (ResolvedProfile, error) {
+		return ResolvedProfile{Name: "default", Profile: Profile{Broker: "https://broker.example.com"}}, nil
+	}
+	rt.openCertStore = openTestStore(cacheDir)
+	rt.accessToken = func(context.Context, ResolvedProfile) (string, error) {
+		return "access-token", nil
+	}
+	rt.sshCertRequester = func(context.Context, ResolvedProfile, string, broker.SSHCertIssueRequest) (broker.SSHCertIssueResponse, error) {
+		brokerCalls++
+		return broker.SSHCertIssueResponse{}, nil
+	}
+	root := rootWithMintForTest(rt, nil)
+
+	err := execute(context.Background(), root, "mint", "--cert-max-lifetime", "-5m", deviceID)
+	if !errors.Is(err, ErrCertNegativeLifetime) {
+		t.Fatalf("Run(mint --cert-max-lifetime -5m) error = %v, want chain through %v", err, ErrCertNegativeLifetime)
+	}
+	if brokerCalls != 0 {
+		t.Fatalf("broker calls = %d, want 0 (guard must short-circuit)", brokerCalls)
+	}
+}
+
 func rootWithMintForTest(rt runtime, stdout *bytes.Buffer) *cobra.Command {
 	root := &cobra.Command{Use: DefaultBinaryName, SilenceUsage: true, SilenceErrors: true}
 	if stdout != nil {

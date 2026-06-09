@@ -17,6 +17,7 @@ const (
 	idpAudienceEnvSuffix      = "IDP_AUDIENCE"
 	idpAudienceParamEnvSuffix = "IDP_AUDIENCE_PARAM"
 	idpScopesEnvSuffix        = "IDP_SCOPES"
+	idpClientSecretEnvSuffix  = "IDP_CLIENT_SECRET"
 	defaultSSHUserEnvSuffix   = "DEFAULT_SSH_USER"
 	tokenStoreEnvSuffix       = "TOKEN_STORE"
 )

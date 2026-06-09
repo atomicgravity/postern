@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/atomicgravity/postern/internal/audit"
@@ -28,10 +29,13 @@ import (
 // fetches the CA public key during construction; ctx is the init-time
 // context bounding both.
 func BuildDeps(ctx context.Context, awsConfig aws.Config, config brokerhandlers.Config) (brokerhandlers.Deps, error) {
+	defaultClass, classRules := principalClassConfig(config.IDP.PrincipalClasses)
 	tokenVerifier, err := idp.NewOIDCVerifier(ctx, idp.OIDCVerifierConfig{
-		Issuer:        config.IDP.Issuer,
-		Audience:      config.IDP.Audience,
-		RequiredScope: config.IDP.RequiredScope,
+		Issuer:                config.IDP.Issuer,
+		Audience:              config.IDP.Audience,
+		RequiredScope:         config.IDP.RequiredScope,
+		DefaultPrincipalClass: defaultClass,
+		PrincipalClassRules:   classRules,
 	})
 	if err != nil {
 		return brokerhandlers.Deps{}, fmt.Errorf("build OIDC verifier: %w", err)
@@ -71,9 +75,10 @@ func BuildDeps(ctx context.Context, awsConfig aws.Config, config brokerhandlers.
 	}
 
 	sshCertIssuer, err := broker.NewSSHCertIssuer(broker.SSHCertIssuerDeps{
-		PipelineDeps: pipelineDeps,
-		Signer:       certSigner,
-		OperatorTTL:  config.CertTTL.Operator.Duration(),
+		PipelineDeps:       pipelineDeps,
+		Signer:             certSigner,
+		OperatorTTL:        config.CertTTL.Operator.Duration(),
+		OperatorTTLByClass: operatorTTLByClass(config.CertTTL.ByClass),
 	})
 	if err != nil {
 		return brokerhandlers.Deps{}, fmt.Errorf("build SSH cert issuer: %w", err)
@@ -199,4 +204,58 @@ func buildRegistryHTTPClient(awsConfig aws.Config, config brokerhandlers.Registr
 	default:
 		return nil, fmt.Errorf("unknown registry.http_auth_mode %q", config.HTTPAuthMode)
 	}
+}
+
+// operatorTTLByClass maps the config's per-class cert-TTL ceilings to the
+// plain time.Duration map the issuer consumes. Config.Validate has already
+// rejected non-positive entries.
+func operatorTTLByClass(byClass map[string]brokerhandlers.Duration) map[string]time.Duration {
+	if len(byClass) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Duration, len(byClass))
+	for class, ttl := range byClass {
+		out[class] = ttl.Duration()
+	}
+	return out
+}
+
+// principalClassConfig maps the broker config's principal-classes block to the
+// verifier's default class + ordered rule list. A nil block yields an empty
+// default (the verifier substitutes "user") and no rules, so every caller is
+// classified as the default class. Config.Validate has already confirmed each
+// rule sets exactly one predicate; the predicate-form selection here mirrors
+// that one-of contract.
+func principalClassConfig(classes *brokerhandlers.PrincipalClassesConfig) (string, []idp.PrincipalClassRule) {
+	if classes == nil {
+		return "", nil
+	}
+
+	rules := make([]idp.PrincipalClassRule, 0, len(classes.Rules))
+	for _, rule := range classes.Rules {
+		rules = append(rules, principalClassRule(rule))
+	}
+	return classes.Default, rules
+}
+
+// principalClassRule maps one config rule to a verifier rule, selecting the
+// predicate kind from whichever predicate field is set.
+func principalClassRule(rule brokerhandlers.PrincipalClassRule) idp.PrincipalClassRule {
+	out := idp.PrincipalClassRule{Class: strings.TrimSpace(rule.Class)}
+	switch {
+	case strings.TrimSpace(rule.ClaimPresent) != "":
+		out.Predicate = idp.PredicateClaimPresent
+		out.Claim = strings.TrimSpace(rule.ClaimPresent)
+	case strings.TrimSpace(rule.ClaimAbsent) != "":
+		out.Predicate = idp.PredicateClaimAbsent
+		out.Claim = strings.TrimSpace(rule.ClaimAbsent)
+	case strings.TrimSpace(rule.Claim) != "":
+		out.Predicate = idp.PredicateClaimEquals
+		out.Claim = strings.TrimSpace(rule.Claim)
+		out.Value = rule.Equals
+	case strings.TrimSpace(rule.ScopeContains) != "":
+		out.Predicate = idp.PredicateScopeContains
+		out.Value = strings.TrimSpace(rule.ScopeContains)
+	}
+	return out
 }

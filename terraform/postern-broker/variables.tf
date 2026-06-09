@@ -36,6 +36,12 @@ variable "idp_required_scope" {
   default     = ""
 }
 
+variable "idp_principal_classes_json" {
+  description = "Principal-classification rules as a JSON (or YAML) document, set on the broker via POSTERN_IDP_PRINCIPAL_CLASSES. The Lambda has no config file, so this env var is how the structured rule list is configured. Shape: {\"default\":\"user\",\"rules\":[{\"class\":\"machine\",\"claim_absent\":\"username\"}]}. Empty (default) classifies every caller as \"user\". Predicates per rule (exactly one): claim_present, claim_absent, claim+equals, scope_contains."
+  type        = string
+  default     = ""
+}
+
 # AVP identity source ----------------------------------------------------------
 #
 # AVP needs an identity source so IsAuthorizedWithToken can map the engineer's

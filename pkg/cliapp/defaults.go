@@ -64,9 +64,34 @@ func defaultProfileResolver(binaryName string, configPath string, envPrefix stri
 	}
 }
 
+// clientSecretFromEnv reads the client-credentials secret from
+// <PREFIX>_IDP_CLIENT_SECRET. The secret is intentionally never read from the
+// config file (or the Profile struct): bearer/secret material lives in env,
+// not world-readable YAML. A missing or blank value yields ok=false so callers
+// can emit an actionable error.
+func clientSecretFromEnv(envPrefix string, lookupEnv func(string) (string, bool)) (string, bool) {
+	value, ok := lookupEnv(EnvName(envPrefix, idpClientSecretEnvSuffix))
+	if !ok {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+// errClientSecretMissing builds the actionable error shown when the
+// client-credentials grant is selected but the secret env var is absent.
+func errClientSecretMissing(envPrefix string) error {
+	return fmt.Errorf("idp.grant is %q but the client secret is not set; export %s with the service-account client secret",
+		GrantClientCredentials, EnvName(envPrefix, idpClientSecretEnvSuffix))
+}
+
 // defaultLoginRunner wires OAuth login.
 func defaultLoginRunner(binaryName string, envPrefix string, lookupEnv func(string) (string, bool)) loginRunnerFunc {
 	return func(ctx context.Context, profile ResolvedProfile, output io.Writer, opts loginOptions) error {
+		if profile.Profile.IDP.usesClientCredentials() {
+			return runClientCredentialsLogin(ctx, profile, output, envPrefix, lookupEnv)
+		}
+
 		store, err := defaultTokenStore(binaryName, profile.Profile.TokenStore, envPrefix, lookupEnv)
 		if err != nil {
 			return err
@@ -97,9 +122,45 @@ func defaultLoginRunner(binaryName string, envPrefix string, lookupEnv func(stri
 	}
 }
 
-// defaultAccessToken loads / refreshes the cached access token.
+// runClientCredentialsLogin validates the service-account credentials by
+// minting one token, then prints the client identity. Nothing is persisted:
+// the client-credentials path re-mints on demand, so there is no token-store
+// state and no refresh token to cache.
+func runClientCredentialsLogin(ctx context.Context, profile ResolvedProfile, output io.Writer, envPrefix string, lookupEnv func(string) (string, bool)) error {
+	if _, err := clientCredentialsAccessToken(ctx, profile, envPrefix, lookupEnv); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(output, "Authenticated as client %s\n", profile.Profile.IDP.ClientID)
+	return err
+}
+
+// clientCredentialsAccessToken mints a fresh access token for the
+// client-credentials grant, sourcing the secret from the environment. It
+// bypasses the token store entirely.
+func clientCredentialsAccessToken(ctx context.Context, profile ResolvedProfile, envPrefix string, lookupEnv func(string) (string, bool)) (string, error) {
+	secret, ok := clientSecretFromEnv(envPrefix, lookupEnv)
+	if !ok {
+		return "", errClientSecretMissing(envPrefix)
+	}
+	return oauthlogin.ClientCredentialsToken(ctx, oauthlogin.ClientCredentialsOptions{
+		Issuer:        profile.Profile.IDP.Issuer,
+		ClientID:      profile.Profile.IDP.ClientID,
+		ClientSecret:  secret,
+		Audience:      profile.Profile.IDP.Audience,
+		AudienceParam: profile.Profile.IDP.AudienceParam,
+		Scopes:        profile.Profile.IDP.Scopes,
+	})
+}
+
+// defaultAccessToken loads / refreshes the cached access token. The
+// client-credentials grant mints a fresh token on each call, bypassing the
+// token store (no refresh state to keep).
 func defaultAccessToken(binaryName string, envPrefix string, lookupEnv func(string) (string, bool)) accessTokenFunc {
 	return func(ctx context.Context, profile ResolvedProfile) (string, error) {
+		if profile.Profile.IDP.usesClientCredentials() {
+			return clientCredentialsAccessToken(ctx, profile, envPrefix, lookupEnv)
+		}
+
 		store, err := defaultTokenStore(binaryName, profile.Profile.TokenStore, envPrefix, lookupEnv)
 		if err != nil {
 			return "", err

@@ -35,7 +35,7 @@ type tunnelDialResult struct {
 // tunnelDial composes mint + /ssh/tunnel + source-proxy-start for ssh and
 // scp's tunnel mode. Returns with the proxy running; the caller owns
 // proxy.Close() + Wait() so exit-code propagation stays explicit.
-func tunnelDial(cmd *cobra.Command, rt runtime, deviceID string, maxLifetime time.Duration, refresh bool, verbose bool) (*tunnelDialResult, error) {
+func tunnelDial(cmd *cobra.Command, rt runtime, deviceID string, maxLifetime time.Duration, certMaxLifetimeMinutes int32, refresh bool, verbose bool) (*tunnelDialResult, error) {
 	maxLifetimeMinutes, err := lifetimeMinutesFromDuration(maxLifetime)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func tunnelDial(cmd *cobra.Command, rt runtime, deviceID string, maxLifetime tim
 		return nil, err
 	}
 
-	if err := ensureFreshCert(cmd, rt, store, profile, deviceID, refresh, verbose); err != nil {
+	if err := ensureFreshCert(cmd, rt, store, profile, deviceID, certMaxLifetimeMinutes, refresh, verbose); err != nil {
 		return nil, err
 	}
 

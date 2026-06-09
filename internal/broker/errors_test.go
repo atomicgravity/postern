@@ -74,8 +74,8 @@ func TestSentinelOnlyFiresForMissingDep(t *testing.T) {
 
 type stubVerifier struct{}
 
-func (stubVerifier) VerifyAccessToken(_ context.Context, _ string) (EngineerClaims, error) {
-	return EngineerClaims{}, nil
+func (stubVerifier) VerifyAccessToken(_ context.Context, _ string) (CallerClaims, error) {
+	return CallerClaims{}, nil
 }
 
 type stubRegistry struct{}

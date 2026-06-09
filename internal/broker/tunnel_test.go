@@ -42,10 +42,12 @@ func (e classifiedTunnelingErr) TunnelingErrorKind() TunnelingErrorKind { return
 func newTunnelTestDeps(t *testing.T) testDeps {
 	t.Helper()
 	return testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{
-			Subject: "sub-123",
-			Email:   "engineer@example.com",
-			Groups:  []string{"postern-engineers"},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{
+			Subject:  "sub-123",
+			Email:    "engineer@example.com",
+			Groups:   []string{"postern-engineers"},
+			Class:    "user",
+			ClientID: "cli-app-7",
 		}},
 		Registry:    &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123", FriendlyID: "prod-a012"}},
 		Policy:      &recordingPolicy{},
@@ -132,6 +134,12 @@ func TestTunnelIssuerHappyPath(t *testing.T) {
 	for _, ev := range audit.events {
 		if ev.PrincipalType != ModeTunnel {
 			t.Fatalf("event %q PrincipalType = %q, want %q", ev.Event, ev.PrincipalType, ModeTunnel)
+		}
+		if ev.PrincipalClass != "user" {
+			t.Fatalf("event %q principal_class = %q, want %q", ev.Event, ev.PrincipalClass, "user")
+		}
+		if ev.ClientID != "cli-app-7" {
+			t.Fatalf("event %q client_id = %q, want %q", ev.Event, ev.ClientID, "cli-app-7")
 		}
 	}
 }
@@ -297,7 +305,7 @@ func TestTunnelIssuerPipelineFailureModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			deps := newTunnelTestDeps(t)
 			deps.TokenVerifier = fixedTokenVerifier{
-				claims: EngineerClaims{Subject: "sub-123"},
+				claims: CallerClaims{Subject: "sub-123"},
 				err:    tc.verifierErr,
 			}
 			deps.Registry = &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}, err: tc.registryErr}

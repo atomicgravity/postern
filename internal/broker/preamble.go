@@ -83,7 +83,7 @@ type engineerPreambleRequest struct {
 // endpoint). Both come from one IDGenerator call so the cert-Serial / JTI
 // relationship is stable in the audit trail.
 type engineerContext struct {
-	Engineer  EngineerClaims
+	Caller    CallerClaims
 	Now       time.Time
 	ID        ID
 	JTI       string
@@ -97,7 +97,7 @@ type engineerContext struct {
 // may inject. Today only the tunnel pipeline populates it (with the requested
 // max_lifetime_minutes so operators can author per-fleet TTL ceilings).
 type devicePreambleRequest struct {
-	Engineer      EngineerClaims
+	Caller        CallerClaims
 	AccessToken   string
 	DeviceID      string
 	Mode          string
@@ -140,7 +140,7 @@ func (d PipelineDeps) verifyEngineer(ctx context.Context, r engineerPreambleRequ
 		UserAgent: r.UserAgent,
 	}
 
-	engineer, err := d.TokenVerifier.VerifyAccessToken(ctx, r.AccessToken)
+	caller, err := d.TokenVerifier.VerifyAccessToken(ctx, r.AccessToken)
 	if err != nil {
 		slog.Warn("verify access token", "err", err, "mode", r.Mode)
 		return engineerContext{}, &preambleDenial{
@@ -150,12 +150,14 @@ func (d PipelineDeps) verifyEngineer(ctx context.Context, r engineerPreambleRequ
 		}, nil
 	}
 
-	template.EngineerSub = engineer.Subject
-	template.EngineerEmail = engineer.Email
-	template.EngineerGroups = engineer.Groups
+	template.EngineerSub = caller.Subject
+	template.EngineerEmail = caller.Email
+	template.EngineerGroups = caller.Groups
+	template.PrincipalClass = caller.Class
+	template.ClientID = caller.ClientID
 
 	if err := d.RateLimiter.Allow(ctx, RateLimitRequest{
-		Engineer:  engineer,
+		Caller:    caller,
 		Mode:      r.Mode,
 		SourceIP:  r.SourceIP,
 		UserAgent: r.UserAgent,
@@ -169,7 +171,7 @@ func (d PipelineDeps) verifyEngineer(ctx context.Context, r engineerPreambleRequ
 	}
 
 	return engineerContext{
-		Engineer:  engineer,
+		Caller:    caller,
 		Now:       now,
 		ID:        id,
 		JTI:       id.UUID,
@@ -190,9 +192,11 @@ func (d PipelineDeps) resolveDevice(ctx context.Context, r devicePreambleRequest
 		JTI:            r.JTI,
 		SourceIP:       r.SourceIP,
 		UserAgent:      r.UserAgent,
-		EngineerSub:    r.Engineer.Subject,
-		EngineerEmail:  r.Engineer.Email,
-		EngineerGroups: r.Engineer.Groups,
+		EngineerSub:    r.Caller.Subject,
+		EngineerEmail:  r.Caller.Email,
+		EngineerGroups: r.Caller.Groups,
+		PrincipalClass: r.Caller.Class,
+		ClientID:       r.Caller.ClientID,
 	}
 
 	if strings.TrimSpace(r.DeviceID) == "" {
@@ -222,7 +226,7 @@ func (d PipelineDeps) resolveDevice(ctx context.Context, r devicePreambleRequest
 
 	if err := d.Policy.Allow(ctx, PolicyRequest{
 		AccessToken: r.AccessToken,
-		Engineer:    r.Engineer,
+		Caller:      r.Caller,
 		Device:      device,
 		Mode:        r.Mode,
 		SourceIP:    r.SourceIP,

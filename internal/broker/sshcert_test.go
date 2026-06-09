@@ -22,10 +22,12 @@ func TestSSHCertIssuerIssuesOperatorCert(t *testing.T) {
 	policy := &recordingPolicy{}
 	rateLimiter := &recordingRateLimiter{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{
-			Subject: "sub-123",
-			Email:   "engineer@example.com",
-			Groups:  []string{"postern-engineers", "on-call"},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{
+			Subject:  "sub-123",
+			Email:    "engineer@example.com",
+			Groups:   []string{"postern-engineers", "on-call"},
+			Class:    "user",
+			ClientID: "cli-app-7",
 		}},
 		Registry:    registry,
 		Policy:      policy,
@@ -116,6 +118,39 @@ func TestSSHCertIssuerIssuesOperatorCert(t *testing.T) {
 	if strings.Contains(string(emptyGroups), "engineer_groups") {
 		t.Fatalf("empty AuditEvent JSON = %s, want engineer_groups omitted", emptyGroups)
 	}
+
+	// Both the authorized and issued rows carry the principal class and the
+	// caller's client_id (stamped wherever the caller identity is known).
+	if len(audit.events) != 2 {
+		t.Fatalf("audit events = %d, want 2 (authorized + issued)", len(audit.events))
+	}
+	for _, ev := range audit.events {
+		if ev.PrincipalClass != "user" {
+			t.Fatalf("%s principal_class = %q, want %q", ev.Event, ev.PrincipalClass, "user")
+		}
+		if ev.ClientID != "cli-app-7" {
+			t.Fatalf("%s client_id = %q, want %q", ev.Event, ev.ClientID, "cli-app-7")
+		}
+	}
+	if got, want := string(encoded), `"principal_class":"user"`; !strings.Contains(got, want) {
+		t.Fatalf("audit JSON = %s, want contains %q", got, want)
+	}
+	if got, want := string(encoded), `"client_id":"cli-app-7"`; !strings.Contains(got, want) {
+		t.Fatalf("audit JSON = %s, want contains %q", got, want)
+	}
+
+	// A caller with no client_id claim still carries principal_class, but
+	// client_id is omitted (omitempty).
+	noClientID, err := json.Marshal(AuditEvent{Event: "ssh_cert_issued", PrincipalClass: "user"})
+	if err != nil {
+		t.Fatalf("json.Marshal(no-client_id AuditEvent) error = %v", err)
+	}
+	if !strings.Contains(string(noClientID), `"principal_class":"user"`) {
+		t.Fatalf("no-client_id AuditEvent JSON = %s, want principal_class present", noClientID)
+	}
+	if strings.Contains(string(noClientID), "client_id") {
+		t.Fatalf("no-client_id AuditEvent JSON = %s, want client_id omitted", noClientID)
+	}
 }
 
 // TestSSHCertIssuerIssuesTimefixCert locks the timefix cert-shape: the
@@ -134,7 +169,7 @@ func TestSSHCertIssuerIssuesTimefixCert(t *testing.T) {
 	registry := &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123", FriendlyID: "prod-a012"}}
 	policy := &recordingPolicy{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{
 			Subject: "sub-123",
 			Email:   "engineer@example.com",
 			Groups:  []string{"postern-engineers"},
@@ -402,7 +437,7 @@ func TestSSHCertIssuerPipelineFailureModes(t *testing.T) {
 			signer := &recordingSigner{publicKey: caSigner.PublicKey(), inner: caSigner, err: tc.signerErr}
 
 			issuer := newTestIssuer(t, testDeps{
-				TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123", Email: "engineer@example.com"}},
+				TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Email: "engineer@example.com"}},
 				Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123", FriendlyID: "prod-a012"}},
 				Policy:        policy,
 				RateLimiter:   rateLimiter,
@@ -493,7 +528,7 @@ func TestSSHCertIssuerEmitsAuthorizedAndIssuedOnSuccess(t *testing.T) {
 	publicKey := newTestAuthorizedPublicKey(t)
 	audit := &recordingAudit{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123", Email: "engineer@example.com"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Email: "engineer@example.com"}},
 		Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123", FriendlyID: "prod-a012"}},
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{},
@@ -578,6 +613,14 @@ func TestSSHCertIssuerDeniesUnverifiedToken(t *testing.T) {
 	if got.EngineerSub != "" {
 		t.Fatalf("engineer_sub = %q, want empty (no engineer established)", got.EngineerSub)
 	}
+	// Pre-identity deny: the principal class and client_id are unknown, so
+	// both are omitted just like engineer_sub.
+	if got.PrincipalClass != "" {
+		t.Fatalf("principal_class = %q, want empty (no caller identity established)", got.PrincipalClass)
+	}
+	if got.ClientID != "" {
+		t.Fatalf("client_id = %q, want empty (no caller identity established)", got.ClientID)
+	}
 }
 
 // TestSSHCertIssuerDeniesUnknownDevice locks the deny-audit reason for the
@@ -586,7 +629,7 @@ func TestSSHCertIssuerDeniesUnverifiedToken(t *testing.T) {
 func TestSSHCertIssuerDeniesUnknownDevice(t *testing.T) {
 	audit := &recordingAudit{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: "machine", ClientID: "svc-42"}},
 		Registry:      &recordingRegistry{err: Error{StatusCode: http.StatusNotFound, Message: "device not found"}},
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{},
@@ -615,6 +658,14 @@ func TestSSHCertIssuerDeniesUnknownDevice(t *testing.T) {
 	}
 	if got.EngineerSub != "sub-123" {
 		t.Fatalf("engineer_sub = %q, want %q", got.EngineerSub, "sub-123")
+	}
+	// Post-identity deny: the caller class and client_id are known by the time
+	// the device lookup fails, so the deny row carries them.
+	if got.PrincipalClass != "machine" {
+		t.Fatalf("principal_class = %q, want %q", got.PrincipalClass, "machine")
+	}
+	if got.ClientID != "svc-42" {
+		t.Fatalf("client_id = %q, want %q", got.ClientID, "svc-42")
 	}
 	if got.DeviceSerial != "" {
 		t.Fatalf("device_serial = %q, want empty (registry never resolved)", got.DeviceSerial)
@@ -667,7 +718,7 @@ func TestSSHCertIssuerDeniesMissingDeviceID(t *testing.T) {
 	audit := &recordingAudit{}
 	rateLimiter := &recordingRateLimiter{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      &recordingRegistry{},
 		Policy:        &recordingPolicy{},
 		RateLimiter:   rateLimiter,
@@ -710,7 +761,7 @@ func TestSSHCertIssuerDeniesMissingPublicKey(t *testing.T) {
 	audit := &recordingAudit{}
 	policy := &recordingPolicy{}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
 		Policy:        policy,
 		RateLimiter:   &recordingRateLimiter{},
@@ -791,7 +842,7 @@ func TestSSHCertIssuerRecordHandlerDenial(t *testing.T) {
 func TestSSHCertIssuerSkipsRegistryOnRateLimitDenial(t *testing.T) {
 	registry := &recordingRegistry{device: DeviceRecord{Serial: "should-not-be-resolved"}}
 	issuer := newTestIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      registry,
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{err: Error{StatusCode: http.StatusTooManyRequests, Message: "rate limit exceeded"}},
@@ -816,6 +867,258 @@ func TestSSHCertIssuerSkipsRegistryOnRateLimitDenial(t *testing.T) {
 	}
 }
 
+// issueOperatorCertForTTL mints an operator cert for the given caller class
+// and requested lifetime, returning the parsed cert so callers can assert on
+// the validity window. The clock is fixed so ValidAfter/ValidBefore are
+// deterministic.
+func issueOperatorCertForTTL(t *testing.T, class string, byClass map[string]time.Duration, operatorTTL time.Duration, requestedMinutes int32) *ssh.Certificate {
+	t.Helper()
+	caSigner := newTestSigner(t)
+	publicKey := newTestAuthorizedPublicKey(t)
+	policy := &recordingPolicy{}
+	issuer := newTestIssuer(t, testDeps{
+		TokenVerifier:      fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: class}},
+		Registry:           &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
+		Policy:             policy,
+		RateLimiter:        &recordingRateLimiter{},
+		Signer:             SSHSigner{Signer: caSigner},
+		Audit:              &recordingAudit{},
+		Clock:              fixedClock{now: time.Unix(1747000000, 0)},
+		IDs:                fixedIDGenerator{id: ID{UUID: "ttl-jti", Serial: 1}},
+		OperatorTTL:        operatorTTL,
+		OperatorTTLByClass: byClass,
+	})
+
+	response, err := issuer.IssueSSHCert(context.Background(), SSHCertIssueRequest{
+		AccessToken:        "access-token-123",
+		DeviceID:           "prod-a012",
+		PrincipalType:      PrincipalTypeOperator,
+		PublicKey:          publicKey,
+		MaxLifetimeMinutes: requestedMinutes,
+		RemoteAddr:         "203.0.113.1:12345",
+	})
+	if err != nil {
+		t.Fatalf("IssueSSHCert() error = %v", err)
+	}
+
+	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(response.SSHCert))
+	if err != nil {
+		t.Fatalf("ParseAuthorizedKey(cert) error = %v", err)
+	}
+	cert, ok := parsedKey.(*ssh.Certificate)
+	if !ok {
+		t.Fatalf("parsed key type = %T, want *ssh.Certificate", parsedKey)
+	}
+	return cert
+}
+
+// TestSSHCertIssuerPerClassTTLCeiling locks the per-class operator-cert
+// ceiling: a machine caller with no request gets the machine ceiling; a
+// user/unmapped caller falls back to the operator default. The window is
+// now+ceiling for ValidBefore, with the fixed clock-skew padding on
+// ValidAfter regardless of class.
+func TestSSHCertIssuerPerClassTTLCeiling(t *testing.T) {
+	byClass := map[string]time.Duration{"machine": time.Hour}
+	const operatorDefault = 12 * time.Hour
+	now := time.Unix(1747000000, 0)
+	wantValidAfter := uint64(now.Add(-OperatorClockSkewPadding).Unix())
+
+	tests := []struct {
+		name            string
+		class           string
+		wantValidBefore uint64
+	}{
+		{name: "machine class uses its own ceiling", class: "machine", wantValidBefore: uint64(now.Add(time.Hour).Unix())},
+		{name: "user class falls back to operator default", class: "user", wantValidBefore: uint64(now.Add(operatorDefault).Unix())},
+		{name: "unmapped class falls back to operator default", class: "robot", wantValidBefore: uint64(now.Add(operatorDefault).Unix())},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cert := issueOperatorCertForTTL(t, tc.class, byClass, operatorDefault, 0)
+			if got := cert.ValidAfter; got != wantValidAfter {
+				t.Fatalf("valid after = %d, want %d", got, wantValidAfter)
+			}
+			if got := cert.ValidBefore; got != tc.wantValidBefore {
+				t.Fatalf("valid before = %d, want %d", got, tc.wantValidBefore)
+			}
+		})
+	}
+}
+
+// TestSSHCertIssuerRequestedTTLClamping locks the propose-and-clamp rule: a
+// request below the ceiling is honored; a request above the ceiling is clamped
+// down to the ceiling (not denied), matching the tunnel default-substitution
+// behavior so an omitted request can't bypass a Cedar `<= N` gate.
+func TestSSHCertIssuerRequestedTTLClamping(t *testing.T) {
+	const operatorDefault = 12 * time.Hour
+	now := time.Unix(1747000000, 0)
+
+	t.Run("request below ceiling honored", func(t *testing.T) {
+		cert := issueOperatorCertForTTL(t, "user", nil, operatorDefault, 120)
+		if got, want := cert.ValidBefore, uint64(now.Add(2*time.Hour).Unix()); got != want {
+			t.Fatalf("valid before = %d, want %d (2h request honored)", got, want)
+		}
+	})
+
+	t.Run("request above ceiling clamped", func(t *testing.T) {
+		cert := issueOperatorCertForTTL(t, "machine", map[string]time.Duration{"machine": time.Hour}, operatorDefault, 600)
+		if got, want := cert.ValidBefore, uint64(now.Add(time.Hour).Unix()); got != want {
+			t.Fatalf("valid before = %d, want %d (clamped to 1h machine ceiling)", got, want)
+		}
+	})
+}
+
+// TestSSHCertIssuerNegativeTTLDenied locks that a negative requested lifetime
+// is a 400 with the shared max_lifetime_exceeds_ceiling deny reason — the same
+// shape the tunnel pipeline emits.
+func TestSSHCertIssuerNegativeTTLDenied(t *testing.T) {
+	audit := &recordingAudit{}
+	issuer := newTestIssuer(t, testDeps{
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: "user"}},
+		Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
+		Policy:        &recordingPolicy{},
+		RateLimiter:   &recordingRateLimiter{},
+		Signer:        &recordingSigner{},
+		Audit:         audit,
+		Clock:         fixedClock{now: time.Unix(1747000000, 0)},
+		IDs:           fixedIDGenerator{id: ID{UUID: "neg-jti", Serial: 1}},
+	})
+
+	_, err := issuer.IssueSSHCert(context.Background(), SSHCertIssueRequest{
+		AccessToken:        "access-token-123",
+		DeviceID:           "prod-a012",
+		PrincipalType:      PrincipalTypeOperator,
+		PublicKey:          newTestAuthorizedPublicKey(t),
+		MaxLifetimeMinutes: -5,
+		RemoteAddr:         "203.0.113.1:12345",
+	})
+	var domainErr Error
+	if !errors.As(err, &domainErr) || domainErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("IssueSSHCert() error = %v, want 400 broker.Error", err)
+	}
+	if len(audit.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(audit.events))
+	}
+	if got := audit.events[0].DeniedReason; got != DenyReasonMaxLifetimeExceedsCeiling {
+		t.Fatalf("denied_reason = %q, want %q", got, DenyReasonMaxLifetimeExceedsCeiling)
+	}
+}
+
+// TestSSHCertIssuerInjectsRequestedTTLPolicyContext locks that Cedar sees the
+// resolved (clamped, default-substituted) lifetime as
+// context.requested_cert_ttl_minutes (an int64), so policy can tighten further
+// but an omitted request can't bypass a `<= N` gate.
+func TestSSHCertIssuerInjectsRequestedTTLPolicyContext(t *testing.T) {
+	const operatorDefault = 12 * time.Hour
+
+	t.Run("omitted request uses resolved ceiling", func(t *testing.T) {
+		policy := &recordingPolicy{}
+		issuer := newTestIssuer(t, testDeps{
+			TokenVerifier:      fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: "machine"}},
+			Registry:           &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
+			Policy:             policy,
+			RateLimiter:        &recordingRateLimiter{},
+			Signer:             SSHSigner{Signer: newTestSigner(t)},
+			Audit:              &recordingAudit{},
+			Clock:              fixedClock{now: time.Unix(1747000000, 0)},
+			IDs:                fixedIDGenerator{id: ID{UUID: "ctx-jti", Serial: 1}},
+			OperatorTTLByClass: map[string]time.Duration{"machine": time.Hour},
+			OperatorTTL:        operatorDefault,
+		})
+
+		_, err := issuer.IssueSSHCert(context.Background(), SSHCertIssueRequest{
+			AccessToken:   "access-token-123",
+			DeviceID:      "prod-a012",
+			PrincipalType: PrincipalTypeOperator,
+			PublicKey:     newTestAuthorizedPublicKey(t),
+		})
+		if err != nil {
+			t.Fatalf("IssueSSHCert() error = %v", err)
+		}
+		got, ok := policy.request.Context["requested_cert_ttl_minutes"]
+		if !ok {
+			t.Fatalf("policy.Context missing requested_cert_ttl_minutes; got %v", policy.request.Context)
+		}
+		if want := int64(60); got != want {
+			t.Fatalf("requested_cert_ttl_minutes = %v, want %v (resolved 1h ceiling, not engineer's zero)", got, want)
+		}
+	})
+
+	t.Run("request below ceiling surfaces the request", func(t *testing.T) {
+		policy := &recordingPolicy{}
+		issuer := newTestIssuer(t, testDeps{
+			TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: "user"}},
+			Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
+			Policy:        policy,
+			RateLimiter:   &recordingRateLimiter{},
+			Signer:        SSHSigner{Signer: newTestSigner(t)},
+			Audit:         &recordingAudit{},
+			Clock:         fixedClock{now: time.Unix(1747000000, 0)},
+			IDs:           fixedIDGenerator{id: ID{UUID: "ctx-jti", Serial: 1}},
+			OperatorTTL:   operatorDefault,
+		})
+
+		_, err := issuer.IssueSSHCert(context.Background(), SSHCertIssueRequest{
+			AccessToken:        "access-token-123",
+			DeviceID:           "prod-a012",
+			PrincipalType:      PrincipalTypeOperator,
+			PublicKey:          newTestAuthorizedPublicKey(t),
+			MaxLifetimeMinutes: 90,
+		})
+		if err != nil {
+			t.Fatalf("IssueSSHCert() error = %v", err)
+		}
+		if got, want := policy.request.Context["requested_cert_ttl_minutes"], int64(90); got != want {
+			t.Fatalf("requested_cert_ttl_minutes = %v, want %v", got, want)
+		}
+	})
+}
+
+// TestSSHCertIssuerTimefixIgnoresTTLRequest locks that the timefix cert's
+// fixed 1970→3000 window is class-independent and unaffected by a requested
+// lifetime, and that the cert pipeline injects no requested_cert_ttl_minutes
+// context for timefix requests.
+func TestSSHCertIssuerTimefixIgnoresTTLRequest(t *testing.T) {
+	policy := &recordingPolicy{}
+	caSigner := newTestSigner(t)
+	issuer := newTestIssuer(t, testDeps{
+		TokenVerifier:      fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123", Class: "machine"}},
+		Registry:           &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
+		Policy:             policy,
+		RateLimiter:        &recordingRateLimiter{},
+		Signer:             SSHSigner{Signer: caSigner},
+		Audit:              &recordingAudit{},
+		Clock:              fixedClock{now: time.Unix(1747000000, 0)},
+		IDs:                fixedIDGenerator{id: ID{UUID: "timefix-jti", Serial: 1}},
+		OperatorTTLByClass: map[string]time.Duration{"machine": time.Hour},
+	})
+
+	response, err := issuer.IssueSSHCert(context.Background(), SSHCertIssueRequest{
+		AccessToken:        "access-token-123",
+		DeviceID:           "prod-a012",
+		PrincipalType:      PrincipalTypeTimefix,
+		PublicKey:          newTestAuthorizedPublicKey(t),
+		MaxLifetimeMinutes: 30,
+	})
+	if err != nil {
+		t.Fatalf("IssueSSHCert() error = %v", err)
+	}
+	parsedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(response.SSHCert))
+	if err != nil {
+		t.Fatalf("ParseAuthorizedKey(cert) error = %v", err)
+	}
+	cert := parsedKey.(*ssh.Certificate)
+	if got, want := cert.ValidAfter, uint64(timefixCertValidAfter.Unix()); got != want {
+		t.Fatalf("timefix valid after = %d, want %d (fixed window, class-independent)", got, want)
+	}
+	if got, want := cert.ValidBefore, uint64(timefixCertValidBefore.Unix()); got != want {
+		t.Fatalf("timefix valid before = %d, want %d (fixed window, class-independent)", got, want)
+	}
+	if _, ok := policy.request.Context["requested_cert_ttl_minutes"]; ok {
+		t.Fatalf("timefix request injected requested_cert_ttl_minutes; want none, got %v", policy.request.Context)
+	}
+}
+
 // newTestIssuer wires an SSHCertIssuer from the canonical test shape:
 // callers pass a flat-field tuple via testDeps so the post-LD-93 SRP
 // split (PipelineDeps + Signer + OperatorTTL nesting) is hidden from the
@@ -833,15 +1136,16 @@ func newTestIssuer(t *testing.T, deps testDeps) *SSHCertIssuer {
 // split. Tests build this struct; the helpers below convert into the
 // post-split issuer-specific *Deps shapes.
 type testDeps struct {
-	TokenVerifier TokenVerifier
-	Registry      Registry
-	Policy        Policy
-	RateLimiter   RateLimiter
-	Signer        CertSigner
-	Audit         AuditSink
-	Clock         Clock
-	IDs           IDGenerator
-	OperatorTTL   time.Duration
+	TokenVerifier      TokenVerifier
+	Registry           Registry
+	Policy             Policy
+	RateLimiter        RateLimiter
+	Signer             CertSigner
+	Audit              AuditSink
+	Clock              Clock
+	IDs                IDGenerator
+	OperatorTTL        time.Duration
+	OperatorTTLByClass map[string]time.Duration
 }
 
 func (d testDeps) pipeline() PipelineDeps {
@@ -858,9 +1162,10 @@ func (d testDeps) pipeline() PipelineDeps {
 
 func (d testDeps) toSSHCert() SSHCertIssuerDeps {
 	return SSHCertIssuerDeps{
-		PipelineDeps: d.pipeline(),
-		Signer:       d.Signer,
-		OperatorTTL:  d.OperatorTTL,
+		PipelineDeps:       d.pipeline(),
+		Signer:             d.Signer,
+		OperatorTTL:        d.OperatorTTL,
+		OperatorTTLByClass: d.OperatorTTLByClass,
 	}
 }
 
@@ -910,11 +1215,11 @@ func newTestAuthorizedPublicKey(t *testing.T) string {
 }
 
 type fixedTokenVerifier struct {
-	claims EngineerClaims
+	claims CallerClaims
 	err    error
 }
 
-func (v fixedTokenVerifier) VerifyAccessToken(context.Context, string) (EngineerClaims, error) {
+func (v fixedTokenVerifier) VerifyAccessToken(context.Context, string) (CallerClaims, error) {
 	return v.claims, v.err
 }
 

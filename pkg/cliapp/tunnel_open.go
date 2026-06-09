@@ -109,7 +109,7 @@ func runTunnelOpen(cmd *cobra.Command, rt runtime, deviceID string, options tunn
 		return err
 	}
 
-	dial, err := tunnelDial(cmd, rt, deviceID, options.MaxLifetime, false, options.Verbose)
+	dial, err := tunnelDial(cmd, rt, deviceID, options.MaxLifetime, 0, false, options.Verbose)
 	if err != nil {
 		return err
 	}

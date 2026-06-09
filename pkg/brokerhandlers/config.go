@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atomicgravity/postern/internal/broker"
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,14 @@ const (
 	DefaultListenAddr          = "127.0.0.1:8080"
 	DefaultRateLimitLimit      = 60
 	DefaultRateLimitWindow     = time.Minute
+
+	// DefaultPrincipalClass is the class assigned when no principal-class rule
+	// matches and the operator didn't set idp.principal_classes.default.
+	DefaultPrincipalClass = "user"
+
+	// MaxPrincipalClassRunes bounds a configured class name so a misconfigured
+	// rule can't bloat the audit row or Cedar context.
+	MaxPrincipalClassRunes = 64
 )
 
 // Sentinel errors for config validation. Validate joins these via
@@ -34,6 +43,9 @@ var (
 	ErrIDPIssuerRequired                  = errors.New("idp.issuer is required")
 	ErrIDPIssuerNotHTTPS                  = errors.New("idp.issuer must use https (the broker fetches JWKs over this scheme; plaintext exposes signing keys to network MITM)")
 	ErrIDPAudienceOrRequiredScopeRequired = errors.New("one of idp.audience or idp.required_scope is required")
+	ErrPrincipalClassNameEmpty            = errors.New("idp.principal_classes rule class name must be non-empty")
+	ErrPrincipalClassNameTooLong          = errors.New("idp.principal_classes class name exceeds the maximum length")
+	ErrPrincipalClassRulePredicate        = errors.New("idp.principal_classes rule must set exactly one predicate (claim_present, claim_absent, claim+equals, or scope_contains)")
 	ErrSignerKMSKeyARNRequired            = errors.New("signer.kms_key_arn is required")
 	ErrRegistryBackendRequired            = errors.New("one of registry.dynamodb_table or registry.http_url is required")
 	ErrRegistryBackendConflict            = errors.New("only one of registry.dynamodb_table or registry.http_url may be set")
@@ -49,6 +61,7 @@ var (
 	ErrAuditLogGroupRequired              = errors.New("audit.cloudwatch_log_group is required")
 	ErrPolicyStoreIDRequired              = errors.New("policy.avp_policy_store_id is required")
 	ErrCertTTLOperatorPositive            = errors.New("cert_ttl.operator must be positive")
+	ErrCertTTLClassPositive               = errors.New("cert_ttl.by_class ceiling must be positive")
 	ErrListenAddrRequired                 = errors.New("listen.addr is required")
 	ErrTrustedProxyInvalid                = errors.New("trusted_proxies entry is not a valid CIDR")
 	ErrTunnelingThingNameFormatInvalid    = errors.New("tunneling.thing_name_format must contain exactly one {serial} placeholder")
@@ -88,10 +101,90 @@ type ListenConfig struct {
 // IDPConfig configures the OIDC verifier. At least one of Audience or
 // RequiredScope must be set so the broker refuses tokens issued for other
 // apps sharing the IdP client.
+//
+// PrincipalClasses is optional: an absent block classifies every caller as the
+// default class ("user"), preserving back-compat for deployments that don't
+// distinguish automated callers.
 type IDPConfig struct {
-	Issuer        string `yaml:"issuer"`
-	Audience      string `yaml:"audience,omitempty"`
-	RequiredScope string `yaml:"required_scope,omitempty"`
+	Issuer           string                  `yaml:"issuer"`
+	Audience         string                  `yaml:"audience,omitempty"`
+	RequiredScope    string                  `yaml:"required_scope,omitempty"`
+	PrincipalClasses *PrincipalClassesConfig `yaml:"principal_classes,omitempty"`
+}
+
+// PrincipalClassesConfig is the operator-configurable classification block.
+// Default is the class stamped when no rule matches (empty resolves to
+// "user"). Rules is an ordered first-match list; the verifier evaluates them
+// top-to-bottom against the access token's claim map.
+type PrincipalClassesConfig struct {
+	Default string               `yaml:"default,omitempty"`
+	Rules   []PrincipalClassRule `yaml:"rules,omitempty"`
+}
+
+// PrincipalClassRule maps a single claim predicate to a class name. Exactly
+// one predicate field must be set per rule; Equals pairs with Claim.
+//
+//   - ClaimPresent: <name>     — claim key exists and is non-empty
+//   - ClaimAbsent: <name>      — claim key missing or empty (Cognito M2M signal)
+//   - Claim: <name> + Equals   — claim is a string == Equals, or array containing it
+//   - ScopeContains: <value>   — the scope/scp claim contains <value>
+type PrincipalClassRule struct {
+	Class         string `yaml:"class"`
+	ClaimPresent  string `yaml:"claim_present,omitempty"`
+	ClaimAbsent   string `yaml:"claim_absent,omitempty"`
+	Claim         string `yaml:"claim,omitempty"`
+	Equals        string `yaml:"equals,omitempty"`
+	ScopeContains string `yaml:"scope_contains,omitempty"`
+}
+
+// predicateCount reports how many predicate forms the rule sets. A valid rule
+// sets exactly one: claim_present, claim_absent, claim (paired with equals),
+// or scope_contains. The claim+equals pair counts as a single predicate.
+func (r PrincipalClassRule) predicateCount() int {
+	count := 0
+	if strings.TrimSpace(r.ClaimPresent) != "" {
+		count++
+	}
+	if strings.TrimSpace(r.ClaimAbsent) != "" {
+		count++
+	}
+	if strings.TrimSpace(r.Claim) != "" {
+		count++
+	}
+	if strings.TrimSpace(r.ScopeContains) != "" {
+		count++
+	}
+	return count
+}
+
+// validatePrincipalClasses checks each rule sets exactly one predicate and
+// carries a non-empty, length-bounded class name; it also bounds the default
+// class name. An absent block is valid (every caller is the default class).
+func validatePrincipalClasses(classes *PrincipalClassesConfig) []error {
+	if classes == nil {
+		return nil
+	}
+
+	var errs []error
+
+	if utf8.RuneCountInString(strings.TrimSpace(classes.Default)) > MaxPrincipalClassRunes {
+		errs = append(errs, ErrPrincipalClassNameTooLong)
+	}
+
+	for index, rule := range classes.Rules {
+		name := strings.TrimSpace(rule.Class)
+		if name == "" {
+			errs = append(errs, fmt.Errorf("%w (rule %d)", ErrPrincipalClassNameEmpty, index))
+		} else if utf8.RuneCountInString(name) > MaxPrincipalClassRunes {
+			errs = append(errs, fmt.Errorf("%w (rule %d)", ErrPrincipalClassNameTooLong, index))
+		}
+
+		if rule.predicateCount() != 1 {
+			errs = append(errs, fmt.Errorf("%w (rule %d)", ErrPrincipalClassRulePredicate, index))
+		}
+	}
+
+	return errs
 }
 
 type SignerConfig struct {
@@ -157,10 +250,14 @@ type PolicyConfig struct {
 	AVPPolicyStoreID string `yaml:"avp_policy_store_id"`
 }
 
-// CertTTLConfig configures per-mode cert validity windows. Only Operator is
-// wired in v1.
+// CertTTLConfig configures the operator-cert validity ceiling. Operator is the
+// default ceiling applied to any principal class without a ByClass entry.
+// ByClass maps a principal class (the classes configured under
+// idp.principal_classes) to its own operator-cert ceiling, e.g.
+// {user: 12h, machine: 1h}; an unmapped class falls back to Operator.
 type CertTTLConfig struct {
-	Operator Duration `yaml:"operator"`
+	Operator Duration            `yaml:"operator"`
+	ByClass  map[string]Duration `yaml:"by_class,omitempty"`
 }
 
 // Duration is a time.Duration that round-trips through YAML as a Go duration
@@ -355,6 +452,12 @@ func (c *Config) WithDefaults(sources map[string]string) {
 			sources["tunneling.thing_name_format"] = "default"
 		}
 	}
+	if c.IDP.PrincipalClasses != nil && strings.TrimSpace(c.IDP.PrincipalClasses.Default) == "" {
+		c.IDP.PrincipalClasses.Default = DefaultPrincipalClass
+		if sources != nil {
+			sources["idp.principal_classes.default"] = "default"
+		}
+	}
 }
 
 // Validate returns nil if all required fields are set, or joined Err*
@@ -373,6 +476,7 @@ func (c *Config) Validate() error {
 	if c.IDP.Audience == "" && c.IDP.RequiredScope == "" {
 		errs = append(errs, ErrIDPAudienceOrRequiredScopeRequired)
 	}
+	errs = append(errs, validatePrincipalClasses(c.IDP.PrincipalClasses)...)
 	if c.Signer.KMSKeyARN == "" {
 		errs = append(errs, ErrSignerKMSKeyARNRequired)
 	}
@@ -438,6 +542,11 @@ func (c *Config) Validate() error {
 	}
 	if c.CertTTL.Operator.Duration() <= 0 {
 		errs = append(errs, ErrCertTTLOperatorPositive)
+	}
+	for class, ttl := range c.CertTTL.ByClass {
+		if ttl.Duration() <= 0 {
+			errs = append(errs, fmt.Errorf("%w (class %q)", ErrCertTTLClassPositive, class))
+		}
 	}
 	for index, entry := range c.TrustedProxies {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(entry)); err != nil {
@@ -551,6 +660,10 @@ func applyEnvOverrides(config *Config, lookupEnv func(string) (string, bool), so
 	setStringFromEnv(&config.IDP.Issuer, "POSTERN_IDP_ISSUER", lookupEnv, sources, "idp.issuer")
 	setStringFromEnv(&config.IDP.Audience, "POSTERN_IDP_AUDIENCE", lookupEnv, sources, "idp.audience")
 	setStringFromEnv(&config.IDP.RequiredScope, "POSTERN_IDP_REQUIRED_SCOPE", lookupEnv, sources, "idp.required_scope")
+	if err := setPrincipalClassesFromEnv(config, lookupEnv, sources); err != nil {
+		return err
+	}
+	setPrincipalClassDefaultFromEnv(config, lookupEnv, sources)
 	setStringFromEnv(&config.Signer.KMSKeyARN, "POSTERN_SIGNER_KMS_KEY_ARN", lookupEnv, sources, "signer.kms_key_arn")
 	setRegistryFromEnv(config, lookupEnv, sources)
 	setStringFromEnv(&config.Registry.HTTPAuthMode, "POSTERN_REGISTRY_HTTP_AUTH_MODE", lookupEnv, sources, "registry.http_auth_mode")
@@ -579,6 +692,47 @@ func applyEnvOverrides(config *Config, lookupEnv func(string) (string, bool), so
 	}
 	setStringSliceFromEnv(&config.TrustedProxies, "POSTERN_TRUSTED_PROXIES", lookupEnv, sources, "trusted_proxies")
 	return nil
+}
+
+// setPrincipalClassesFromEnv loads the whole principal_classes block from
+// POSTERN_IDP_PRINCIPAL_CLASSES, decoded as YAML (which also accepts JSON).
+// This is how a deployment with no config file — the Lambda — configures the
+// rule list. It replaces any file-provided block; POSTERN_IDP_PRINCIPAL_CLASS_-
+// DEFAULT then overrides the default class on top. Unknown keys are rejected so
+// a misspelled predicate or class key fails loudly rather than silently
+// classifying every caller as the default.
+func setPrincipalClassesFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) error {
+	value, ok := lookupEnv("POSTERN_IDP_PRINCIPAL_CLASSES")
+	if !ok || strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	var parsed PrincipalClassesConfig
+	decoder := yaml.NewDecoder(strings.NewReader(value))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&parsed); err != nil {
+		return fmt.Errorf("POSTERN_IDP_PRINCIPAL_CLASSES: %w", err)
+	}
+
+	config.IDP.PrincipalClasses = &parsed
+	sources["idp.principal_classes"] = "POSTERN_IDP_PRINCIPAL_CLASSES"
+	return nil
+}
+
+// setPrincipalClassDefaultFromEnv overrides the default principal class,
+// lazy-allocating the PrincipalClasses block when the env var is set but the
+// section was absent from the file. With no rules, this default applies to
+// every caller.
+func setPrincipalClassDefaultFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) {
+	if value, ok := lookupEnv("POSTERN_IDP_PRINCIPAL_CLASS_DEFAULT"); ok {
+		if value = strings.TrimSpace(value); value != "" {
+			if config.IDP.PrincipalClasses == nil {
+				config.IDP.PrincipalClasses = &PrincipalClassesConfig{}
+			}
+			config.IDP.PrincipalClasses.Default = value
+			sources["idp.principal_classes.default"] = "POSTERN_IDP_PRINCIPAL_CLASS_DEFAULT"
+		}
+	}
 }
 
 func setTunnelingRegionFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) {

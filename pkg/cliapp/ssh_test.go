@@ -499,6 +499,84 @@ func TestSSHTunnelExtractsServiceIDAndRegion(t *testing.T) {
 	}
 }
 
+// TestSSHCertMaxLifetimeFlowsToCertRequest covers --cert-max-lifetime in
+// direct-LAN mode: the requested cert TTL converts to minutes and lands
+// in the broker cert request (distinct from the tunnel --max-lifetime).
+func TestSSHCertMaxLifetimeFlowsToCertRequest(t *testing.T) {
+	rt, _, recorder := newSSHTestRuntime(t)
+	var gotRequest broker.SSHCertIssueRequest
+	recorder.response = func(request broker.SSHCertIssueRequest) broker.SSHCertIssueResponse {
+		gotRequest = request
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, recorder.ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), "device-1234", time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}
+	}
+	root := rootWithSSHForTest(rt, nil)
+
+	if err := execute(context.Background(), root, "ssh", "--cert-max-lifetime", "1h", "device-1234"); err != nil {
+		t.Fatalf("Run(ssh --cert-max-lifetime) error = %v", err)
+	}
+
+	if got, want := gotRequest.MaxLifetimeMinutes, int32(60); got != want {
+		t.Fatalf("cert request.MaxLifetimeMinutes = %d, want %d", got, want)
+	}
+}
+
+// TestSSHCertAndTunnelLifetimeAreIndependent confirms --cert-max-lifetime
+// and --max-lifetime (tunnel) map to *different* request fields: the cert
+// TTL flows to the cert request's MaxLifetimeMinutes; the tunnel TTL flows
+// to the tunnelOpener call. Setting both on one invocation must not cross
+// the wires.
+func TestSSHCertAndTunnelLifetimeAreIndependent(t *testing.T) {
+	rt, _, recorder := newSSHTestRuntime(t)
+	var gotRequest broker.SSHCertIssueRequest
+	recorder.response = func(request broker.SSHCertIssueRequest) broker.SSHCertIssueResponse {
+		gotRequest = request
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, recorder.ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), "device-1234", time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}
+	}
+	tunnelCalls := newTunnelCallRecorder()
+	rt.tunnelOpener = tunnelCalls.opener("source-token", "tunnel-id", "us-east-1", 480)
+	proxy := newFakeSourceProxy(41999)
+	rt.sourceProxyStarter = proxy.starter()
+	root := rootWithSSHForTest(rt, nil)
+
+	if err := execute(context.Background(), root, "ssh", "--tunnel", "--max-lifetime", "2h", "--cert-max-lifetime", "30m", "device-1234", "engineer@x"); err != nil {
+		t.Fatalf("Run(ssh --tunnel --max-lifetime --cert-max-lifetime) error = %v", err)
+	}
+
+	if got, want := gotRequest.MaxLifetimeMinutes, int32(30); got != want {
+		t.Fatalf("cert request.MaxLifetimeMinutes = %d, want %d (from --cert-max-lifetime)", got, want)
+	}
+	if got, want := tunnelCalls.lastMaxLifetime(), int32(120); got != want {
+		t.Fatalf("tunnelOpener max-lifetime = %d, want %d (from --max-lifetime)", got, want)
+	}
+}
+
+// TestSSHCertMaxLifetimeNegativeRejected covers the client-side guard for
+// the cert TTL flag: a negative duration fails before any broker round-trip.
+func TestSSHCertMaxLifetimeNegativeRejected(t *testing.T) {
+	rt, capture, recorder := newSSHTestRuntime(t)
+	recorder.response = func(request broker.SSHCertIssueRequest) broker.SSHCertIssueResponse {
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, recorder.ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), "device-1234", time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}
+	}
+	root := rootWithSSHForTest(rt, nil)
+
+	err := execute(context.Background(), root, "ssh", "--cert-max-lifetime", "-5m", "device-1234")
+	if !errors.Is(err, ErrCertNegativeLifetime) {
+		t.Fatalf("Run(ssh --cert-max-lifetime -5m) error = %v, want chain through %v", err, ErrCertNegativeLifetime)
+	}
+	if recorder.calls != 0 {
+		t.Fatalf("broker calls = %d, want 0 (guard must short-circuit)", recorder.calls)
+	}
+	if len(capture.invocations) != 0 {
+		t.Fatalf("execSSH invocations = %d, want 0", len(capture.invocations))
+	}
+}
+
 // TestSSHUserFlagAddsDashL covers the new --user flag: it injects
 // `-l <user>` into the ssh argv and wins over any other signal.
 func TestSSHUserFlagAddsDashL(t *testing.T) {

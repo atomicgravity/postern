@@ -82,6 +82,52 @@ func TestSCPArgvShape(t *testing.T) {
 	}
 }
 
+// TestSCPCertMaxLifetimeFlowsToCertRequest covers --cert-max-lifetime in
+// direct-LAN mode: the requested cert TTL lands in the broker cert request,
+// independently of the tunnel --max-lifetime flag.
+func TestSCPCertMaxLifetimeFlowsToCertRequest(t *testing.T) {
+	rt, _, recorder := newSCPTestRuntime(t)
+	var gotRequest broker.SSHCertIssueRequest
+	recorder.response = func(request broker.SSHCertIssueRequest) broker.SSHCertIssueResponse {
+		gotRequest = request
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, recorder.ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), "device-1234", time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}
+	}
+	root := rootWithSCPForTest(rt)
+
+	if err := execute(context.Background(), root, "scp", "--cert-max-lifetime", "1h", "device-1234", "engineer@x:/foo", "./foo"); err != nil {
+		t.Fatalf("Run(scp --cert-max-lifetime) error = %v", err)
+	}
+
+	if got, want := gotRequest.MaxLifetimeMinutes, int32(60); got != want {
+		t.Fatalf("cert request.MaxLifetimeMinutes = %d, want %d", got, want)
+	}
+}
+
+// TestSCPCertMaxLifetimeNegativeRejected covers the client-side guard: a
+// negative --cert-max-lifetime fails before any broker round-trip.
+func TestSCPCertMaxLifetimeNegativeRejected(t *testing.T) {
+	rt, capture, recorder := newSCPTestRuntime(t)
+	recorder.response = func(request broker.SSHCertIssueRequest) broker.SSHCertIssueResponse {
+		return broker.SSHCertIssueResponse{
+			SSHCert: marshalCertForTest(t, recorder.ca.mintCert(t, mustParseRequestKey(t, request.PublicKey), "device-1234", time.Now().Add(-time.Minute), time.Now().Add(12*time.Hour))),
+		}
+	}
+	root := rootWithSCPForTest(rt)
+
+	err := execute(context.Background(), root, "scp", "--cert-max-lifetime", "-5m", "device-1234", "engineer@x:/foo", "./foo")
+	if !errors.Is(err, ErrCertNegativeLifetime) {
+		t.Fatalf("Run(scp --cert-max-lifetime -5m) error = %v, want chain through %v", err, ErrCertNegativeLifetime)
+	}
+	if recorder.calls != 0 {
+		t.Fatalf("broker calls = %d, want 0 (guard must short-circuit)", recorder.calls)
+	}
+	if len(capture.invocations) != 0 {
+		t.Fatalf("execSCP invocations = %d, want 0", len(capture.invocations))
+	}
+}
+
 // TestSCPCacheStateDecidesBrokerCall covers the mint-vs-reuse cache decision
 // matrix: cache empty / cache hit comfortably valid / cache hit below the
 // 5-minute safety margin / --refresh flag forcing re-mint. In every case scp

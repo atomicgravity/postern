@@ -83,7 +83,7 @@ func runAddHost(cmd *cobra.Command, rt runtime, deviceID string, options addHost
 	// entry yields opaque ssh failures, worse than no stanza at all.
 	var mintedCert *ssh.Certificate
 	if !options.NoMint {
-		cert, err := mintAndCache(cmd, rt, store, profile, deviceID, false)
+		cert, err := mintAndCache(cmd, rt, store, profile, deviceID, 0, false)
 		if err != nil {
 			return err
 		}

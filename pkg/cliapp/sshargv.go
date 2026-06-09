@@ -2,13 +2,14 @@ package cliapp
 
 // Canonical flag names shared by ssh / scp / tunnel.
 const (
-	flagRefresh     = "refresh"
-	flagTunnel      = "tunnel"
-	flagMaxLifetime = "max-lifetime"
-	flagUser        = "user"
-	flagPortOnly    = "port-only"
-	flagReap        = "reap"
-	flagVerbose     = "verbose"
+	flagRefresh         = "refresh"
+	flagTunnel          = "tunnel"
+	flagMaxLifetime     = "max-lifetime"
+	flagCertMaxLifetime = "cert-max-lifetime"
+	flagUser            = "user"
+	flagPortOnly        = "port-only"
+	flagReap            = "reap"
+	flagVerbose         = "verbose"
 )
 
 // sshIdentityArgs returns the identity / cert / cert-only-auth options

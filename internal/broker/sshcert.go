@@ -46,18 +46,23 @@ var (
 )
 
 // SSHCertIssuerDeps wires the per-issue dependencies into the cert-mint
-// pipeline. OperatorTTL falls back to DefaultOperatorCertTTL when zero.
+// pipeline. OperatorTTL falls back to DefaultOperatorCertTTL when zero and is
+// the ceiling for any principal class without a per-class entry.
+// OperatorTTLByClass maps a principal class to its own operator-cert ceiling;
+// an unmapped class falls back to OperatorTTL.
 type SSHCertIssuerDeps struct {
 	PipelineDeps
-	Signer      CertSigner
-	OperatorTTL time.Duration
+	Signer             CertSigner
+	OperatorTTL        time.Duration
+	OperatorTTLByClass map[string]time.Duration
 }
 
 // SSHCertIssuer runs the broker's cert-mint pipeline.
 type SSHCertIssuer struct {
 	PipelineDeps
-	signer      CertSigner
-	operatorTTL time.Duration
+	signer             CertSigner
+	operatorTTL        time.Duration
+	operatorTTLByClass map[string]time.Duration
 }
 
 // NewSSHCertIssuer constructs an SSHCertIssuer. Missing deps are reported via
@@ -80,7 +85,29 @@ func NewSSHCertIssuer(deps SSHCertIssuerDeps) (*SSHCertIssuer, error) {
 		ttl = DefaultOperatorCertTTL
 	}
 
-	return &SSHCertIssuer{PipelineDeps: pipeline, signer: deps.Signer, operatorTTL: ttl}, nil
+	byClass := make(map[string]time.Duration, len(deps.OperatorTTLByClass))
+	for class, classTTL := range deps.OperatorTTLByClass {
+		if classTTL > 0 {
+			byClass[class] = classTTL
+		}
+	}
+
+	return &SSHCertIssuer{
+		PipelineDeps:       pipeline,
+		signer:             deps.Signer,
+		operatorTTL:        ttl,
+		operatorTTLByClass: byClass,
+	}, nil
+}
+
+// operatorCeiling resolves the operator-cert validity ceiling for a caller's
+// principal class, falling back to the default operator TTL when the class is
+// unmapped.
+func (i *SSHCertIssuer) operatorCeiling(class string) time.Duration {
+	if ttl, ok := i.operatorTTLByClass[class]; ok {
+		return ttl
+	}
+	return i.operatorTTL
 }
 
 // IssueSSHCert runs the cert-mint pipeline end to end and returns the signed
@@ -118,15 +145,43 @@ func (i *SSHCertIssuer) IssueSSHCert(ctx context.Context, request SSHCertIssueRe
 		return SSHCertIssueResponse{}, Error{StatusCode: http.StatusBadRequest, Message: fmt.Sprintf("principal_type must be %q or %q", PrincipalTypeOperator, PrincipalTypeTimefix)}
 	}
 
+	// Operator-cert TTL resolution: clamp the optional requested lifetime to the
+	// per-class ceiling and surface the resolved value to Cedar so policy can
+	// tighten it further (deny-only). A negative request is rejected; a request
+	// above the ceiling is clamped down rather than denied, matching the tunnel
+	// pipeline so an omitted request can't bypass a per-fleet
+	// `context.requested_cert_ttl_minutes <= N` gate. The timefix cert's
+	// 1970→3000 window is fixed and class-independent, so it skips this entirely.
+	var (
+		operatorTTL   time.Duration
+		policyContext map[string]any
+	)
+	if mode == ModeOperator {
+		if request.MaxLifetimeMinutes < 0 {
+			i.recordCertDenial(ctx, denialTemplate(engineerCtx), DenyReasonMaxLifetimeExceedsCeiling, request)
+			return SSHCertIssueResponse{}, Error{StatusCode: http.StatusBadRequest, Message: "max_lifetime_minutes must be non-negative"}
+		}
+
+		ceiling := i.operatorCeiling(engineerCtx.Caller.Class)
+		operatorTTL = ceiling
+		if requested := time.Duration(request.MaxLifetimeMinutes) * time.Minute; requested > 0 && requested < ceiling {
+			operatorTTL = requested
+		}
+
+		resolvedMinutes := int64(operatorTTL / time.Minute)
+		policyContext = map[string]any{"requested_cert_ttl_minutes": resolvedMinutes}
+	}
+
 	deviceCtx, denial, err := i.resolveDevice(ctx, devicePreambleRequest{
-		Engineer:    engineerCtx.Engineer,
-		AccessToken: request.AccessToken,
-		DeviceID:    request.DeviceID,
-		Mode:        mode,
-		SourceIP:    engineerCtx.SourceIP,
-		UserAgent:   engineerCtx.UserAgent,
-		JTI:         engineerCtx.JTI,
-		Now:         engineerCtx.Now,
+		Caller:        engineerCtx.Caller,
+		AccessToken:   request.AccessToken,
+		DeviceID:      request.DeviceID,
+		Mode:          mode,
+		SourceIP:      engineerCtx.SourceIP,
+		UserAgent:     engineerCtx.UserAgent,
+		JTI:           engineerCtx.JTI,
+		Now:           engineerCtx.Now,
+		PolicyContext: policyContext,
 	})
 	if err != nil {
 		return SSHCertIssueResponse{}, err
@@ -163,7 +218,7 @@ func (i *SSHCertIssuer) IssueSSHCert(ctx context.Context, request SSHCertIssueRe
 	switch mode {
 	case ModeOperator:
 		validAfter = engineerCtx.Now.Add(-OperatorClockSkewPadding)
-		validBefore = engineerCtx.Now.Add(i.operatorTTL)
+		validBefore = engineerCtx.Now.Add(operatorTTL)
 		cert = buildOperatorCert(engineerCtx, deviceCtx, publicKey, validAfter, validBefore)
 	case ModeTimefix:
 		validAfter = timefixCertValidAfter
@@ -176,9 +231,11 @@ func (i *SSHCertIssuer) IssueSSHCert(ctx context.Context, request SSHCertIssueRe
 	authorized := AuditEvent{
 		Timestamp:      engineerCtx.Now,
 		Event:          EventCertAuthorized,
-		EngineerSub:    engineerCtx.Engineer.Subject,
-		EngineerEmail:  engineerCtx.Engineer.Email,
-		EngineerGroups: engineerCtx.Engineer.Groups,
+		EngineerSub:    engineerCtx.Caller.Subject,
+		EngineerEmail:  engineerCtx.Caller.Email,
+		EngineerGroups: engineerCtx.Caller.Groups,
+		PrincipalClass: engineerCtx.Caller.Class,
+		ClientID:       engineerCtx.Caller.ClientID,
 		DeviceSerial:   deviceCtx.Device.Serial,
 		DeviceIDUsed:   request.DeviceID,
 		PrincipalType:  mode,
@@ -212,7 +269,7 @@ func (i *SSHCertIssuer) IssueSSHCert(ctx context.Context, request SSHCertIssueRe
 	if err := i.Audit.Record(ctx, issued); err != nil {
 		slog.Error("record SSH cert issuance audit event",
 			slog.String("err", err.Error()),
-			slog.String("engineer_sub", engineerCtx.Engineer.Subject),
+			slog.String("engineer_sub", engineerCtx.Caller.Subject),
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("jti", engineerCtx.JTI))
 	}
@@ -263,7 +320,7 @@ func buildOperatorCert(engineerCtx engineerContext, deviceCtx deviceContext, pub
 		Key:             publicKey,
 		Serial:          engineerCtx.ID.Serial,
 		CertType:        ssh.UserCert,
-		KeyId:           keyID(engineerCtx.Engineer, engineerCtx.JTI),
+		KeyId:           keyID(engineerCtx.Caller, engineerCtx.JTI),
 		ValidPrincipals: []string{operatorPrincipal(deviceCtx.Device.Serial)},
 		ValidAfter:      uint64(validAfter.Unix()),
 		ValidBefore:     uint64(validBefore.Unix()),
@@ -292,7 +349,7 @@ func buildTimefixCert(engineerCtx engineerContext, deviceCtx deviceContext, publ
 		Key:             publicKey,
 		Serial:          engineerCtx.ID.Serial,
 		CertType:        ssh.UserCert,
-		KeyId:           keyID(engineerCtx.Engineer, engineerCtx.JTI),
+		KeyId:           keyID(engineerCtx.Caller, engineerCtx.JTI),
 		ValidPrincipals: []string{timefixPrincipal(deviceCtx.Device.Serial)},
 		ValidAfter:      uint64(timefixCertValidAfter.Unix()),
 		ValidBefore:     uint64(timefixCertValidBefore.Unix()),
@@ -314,7 +371,7 @@ func timefixPrincipal(serial string) string {
 // keyID composes the SSH cert KeyId. Subject and email are URL-escaped so a
 // compromised IdP can't smuggle ';' or '\n' through the structured KeyId log
 // queries parse.
-func keyID(engineer EngineerClaims, jti string) string {
+func keyID(engineer CallerClaims, jti string) string {
 	return "engineer_sub:" + url.PathEscape(engineer.Subject) +
 		";engineer_email:" + url.PathEscape(engineer.Email) +
 		";jti:" + jti

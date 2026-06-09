@@ -55,6 +55,7 @@ resource "aws_lambda_function" "broker" {
         POSTERN_IDP_ISSUER                 = var.idp_issuer
         POSTERN_IDP_AUDIENCE               = var.idp_audience
         POSTERN_IDP_REQUIRED_SCOPE         = var.idp_required_scope
+        POSTERN_IDP_PRINCIPAL_CLASSES      = var.idp_principal_classes_json
         POSTERN_SIGNER_KMS_KEY_ARN         = aws_kms_key.ssh_ca.arn
         POSTERN_RATELIMIT_DYNAMODB_TABLE   = aws_dynamodb_table.ratelimit.name
         POSTERN_RATELIMIT_LIMIT            = tostring(var.ratelimit_limit)

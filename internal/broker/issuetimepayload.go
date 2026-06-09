@@ -135,7 +135,7 @@ func (i *TimePayloadIssuer) IssueTimePayload(ctx context.Context, request TimePa
 	}
 
 	deviceCtx, denial, err := i.resolveDevice(ctx, devicePreambleRequest{
-		Engineer:    engineerCtx.Engineer,
+		Caller:      engineerCtx.Caller,
 		AccessToken: request.AccessToken,
 		DeviceID:    request.DeviceID,
 		Mode:        ModeTimefix,
@@ -160,7 +160,7 @@ func (i *TimePayloadIssuer) IssueTimePayload(ctx context.Context, request TimePa
 		DeviceSerial: deviceCtx.Device.Serial,
 		IAT:          engineerCtx.Now.Unix(),
 		Iss:          timePayloadIssuer,
-		IssuedTo:     engineerCtx.Engineer.Subject,
+		IssuedTo:     engineerCtx.Caller.Subject,
 		JTI:          engineerCtx.JTI,
 		Nonce:        trimmedNonce,
 		Now:          engineerCtx.Now.Format(time.RFC3339),
@@ -173,9 +173,11 @@ func (i *TimePayloadIssuer) IssueTimePayload(ctx context.Context, request TimePa
 	authorized := AuditEvent{
 		Timestamp:      engineerCtx.Now,
 		Event:          EventTimePayloadAuthorized,
-		EngineerSub:    engineerCtx.Engineer.Subject,
-		EngineerEmail:  engineerCtx.Engineer.Email,
-		EngineerGroups: engineerCtx.Engineer.Groups,
+		EngineerSub:    engineerCtx.Caller.Subject,
+		EngineerEmail:  engineerCtx.Caller.Email,
+		EngineerGroups: engineerCtx.Caller.Groups,
+		PrincipalClass: engineerCtx.Caller.Class,
+		ClientID:       engineerCtx.Caller.ClientID,
 		DeviceSerial:   deviceCtx.Device.Serial,
 		DeviceIDUsed:   request.DeviceID,
 		PrincipalType:  ModeTimefix,
@@ -224,7 +226,7 @@ func (i *TimePayloadIssuer) IssueTimePayload(ctx context.Context, request TimePa
 	if err := i.Audit.Record(ctx, issued); err != nil {
 		slog.Error("record time payload issuance audit event",
 			slog.String("err", err.Error()),
-			slog.String("engineer_sub", engineerCtx.Engineer.Subject),
+			slog.String("engineer_sub", engineerCtx.Caller.Subject),
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("jti", engineerCtx.JTI))
 	}

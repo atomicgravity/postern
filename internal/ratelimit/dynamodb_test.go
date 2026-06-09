@@ -78,8 +78,8 @@ func TestAllowIssuesConditionalIncrementWithinWindow(t *testing.T) {
 	}
 
 	if err := limiter.Allow(context.Background(), broker.RateLimitRequest{
-		Mode:     broker.ModeOperator,
-		Engineer: broker.EngineerClaims{Subject: "  engineer-1234  "},
+		Mode:   broker.ModeOperator,
+		Caller: broker.CallerClaims{Subject: "  engineer-1234  "},
 	}); err != nil {
 		t.Fatalf("Allow() error = %v", err)
 	}
@@ -113,8 +113,8 @@ func TestAllowMaps429OnConditionalCheckFailed(t *testing.T) {
 	limiter := newLimiter(t, fake, fixedClock{now: time.Now()})
 
 	err := limiter.Allow(context.Background(), broker.RateLimitRequest{
-		Mode:     broker.ModeOperator,
-		Engineer: broker.EngineerClaims{Subject: "engineer-1234"},
+		Mode:   broker.ModeOperator,
+		Caller: broker.CallerClaims{Subject: "engineer-1234"},
 	})
 	var domainErr broker.Error
 	if !errors.As(err, &domainErr) || domainErr.StatusCode != http.StatusTooManyRequests {
@@ -128,8 +128,8 @@ func TestAllowPropagatesDynamoDBError(t *testing.T) {
 	limiter := newLimiter(t, fake, fixedClock{now: time.Now()})
 
 	err := limiter.Allow(context.Background(), broker.RateLimitRequest{
-		Mode:     broker.ModeOperator,
-		Engineer: broker.EngineerClaims{Subject: "engineer-1234"},
+		Mode:   broker.ModeOperator,
+		Caller: broker.CallerClaims{Subject: "engineer-1234"},
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("Allow() error = %v, want errors.Is(%v)", err, want)
@@ -152,8 +152,8 @@ func TestAllowConsumesConfiguredLimitAndWindow(t *testing.T) {
 	}
 
 	if err := limiter.Allow(context.Background(), broker.RateLimitRequest{
-		Mode:     broker.ModeOperator,
-		Engineer: broker.EngineerClaims{Subject: "engineer-1234"},
+		Mode:   broker.ModeOperator,
+		Caller: broker.CallerClaims{Subject: "engineer-1234"},
 	}); err != nil {
 		t.Fatalf("Allow() error = %v", err)
 	}
@@ -186,8 +186,8 @@ func TestAllowWindowKeyChangesAcrossWindowBoundary(t *testing.T) {
 	}
 
 	request := broker.RateLimitRequest{
-		Mode:     broker.ModeOperator,
-		Engineer: broker.EngineerClaims{Subject: "engineer-1234"},
+		Mode:   broker.ModeOperator,
+		Caller: broker.CallerClaims{Subject: "engineer-1234"},
 	}
 	if err := limiter.Allow(context.Background(), request); err != nil {
 		t.Fatalf("Allow() first error = %v", err)

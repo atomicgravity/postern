@@ -135,7 +135,7 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 	}
 
 	deviceCtx, denial, err := i.resolveDevice(ctx, devicePreambleRequest{
-		Engineer:    engineerCtx.Engineer,
+		Caller:      engineerCtx.Caller,
 		AccessToken: request.AccessToken,
 		DeviceID:    request.DeviceID,
 		Mode:        ModeTunnel,
@@ -166,9 +166,11 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 	authorized := AuditEvent{
 		Timestamp:      engineerCtx.Now,
 		Event:          EventTunnelAuthorized,
-		EngineerSub:    engineerCtx.Engineer.Subject,
-		EngineerEmail:  engineerCtx.Engineer.Email,
-		EngineerGroups: engineerCtx.Engineer.Groups,
+		EngineerSub:    engineerCtx.Caller.Subject,
+		EngineerEmail:  engineerCtx.Caller.Email,
+		EngineerGroups: engineerCtx.Caller.Groups,
+		PrincipalClass: engineerCtx.Caller.Class,
+		ClientID:       engineerCtx.Caller.ClientID,
 		DeviceSerial:   deviceCtx.Device.Serial,
 		DeviceIDUsed:   request.DeviceID,
 		PrincipalType:  ModeTunnel,
@@ -200,7 +202,7 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		slog.Error("tunneling backend OpenTunnel failed",
 			slog.String("err", err.Error()),
 			slog.String("denied_reason", denied.DeniedReason),
-			slog.String("engineer_sub", engineerCtx.Engineer.Subject),
+			slog.String("engineer_sub", engineerCtx.Caller.Subject),
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("thing_name", i.thingName(deviceCtx.Device.Serial)),
 			slog.String("jti", engineerCtx.JTI))
@@ -214,7 +216,7 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 	if err := i.Audit.Record(ctx, issued); err != nil {
 		slog.Error("record tunnel issuance audit event",
 			slog.String("err", err.Error()),
-			slog.String("engineer_sub", engineerCtx.Engineer.Subject),
+			slog.String("engineer_sub", engineerCtx.Caller.Subject),
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("jti", engineerCtx.JTI))
 	}

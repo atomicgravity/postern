@@ -17,20 +17,31 @@ import (
 var ErrMintNoAuth = errors.New("no cached access token")
 
 func mintCommand(rt runtime) *cobra.Command {
-	return &cobra.Command{
+	var certMaxLifetime time.Duration
+
+	command := &cobra.Command{
 		Use:   "mint <device-id>",
 		Short: "Mint an SSH certificate for a device and cache it on disk",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMint(cmd, rt, args[0])
+			return runMint(cmd, rt, args[0], certMaxLifetime)
 		},
 	}
+
+	command.Flags().DurationVar(&certMaxLifetime, flagCertMaxLifetime, 0, "engineer-requested certificate TTL (e.g. 30m, 4h); zero means use the broker default; the broker clamps it to its per-class ceiling")
+
+	return command
 }
 
 // runMint always calls the broker; cache reuse belongs to ssh/scp.
-func runMint(cmd *cobra.Command, rt runtime, deviceID string) error {
+func runMint(cmd *cobra.Command, rt runtime, deviceID string, certMaxLifetime time.Duration) error {
 	deviceID = strings.TrimSpace(deviceID)
 	if err := validateMintDeviceID(deviceID); err != nil {
+		return err
+	}
+
+	certMaxLifetimeMinutes, err := certLifetimeMinutesFromDuration(certMaxLifetime)
+	if err != nil {
 		return err
 	}
 
@@ -44,7 +55,7 @@ func runMint(cmd *cobra.Command, rt runtime, deviceID string) error {
 		return err
 	}
 
-	cert, err := mintAndCache(cmd, rt, store, profile, deviceID, false)
+	cert, err := mintAndCache(cmd, rt, store, profile, deviceID, certMaxLifetimeMinutes, false)
 	if err != nil {
 		return err
 	}

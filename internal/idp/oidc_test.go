@@ -72,7 +72,7 @@ func TestVerifyAccessTokenRejectsEmptyToken(t *testing.T) {
 
 // TestVerifyAccessTokenAcceptsValidToken is the happy-path locking test:
 // well-formed access token with correct token_use, audience, and scope yields
-// EngineerClaims populated from the token.
+// CallerClaims populated from the token.
 func TestVerifyAccessTokenAcceptsValidToken(t *testing.T) {
 	fixture := newOIDCFixture(t)
 	verifier := fixture.newVerifier(t, "https://broker.example.com", "postern/ssh")
@@ -222,6 +222,195 @@ func TestVerifyAccessTokenRejectsMisbuiltTokens(t *testing.T) {
 	}
 }
 
+// TestClassifyEvaluatesPredicateForms covers each predicate form, first-match
+// ordering, the default fallback, and the client_id read. The token's claim
+// map drives classification entirely; no live IdP rule re-derivation happens
+// downstream.
+func TestClassifyEvaluatesPredicateForms(t *testing.T) {
+	cases := []struct {
+		name      string
+		rules     []PrincipalClassRule
+		mutate    func(map[string]any)
+		wantClass string
+	}{
+		{
+			name:      "no rules falls back to default user",
+			rules:     nil,
+			wantClass: "user",
+		},
+		{
+			name: "claim_absent matches Cognito M2M token without username",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimAbsent, Claim: "username"},
+			},
+			wantClass: "machine",
+		},
+		{
+			name: "claim_absent does not match when username present",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimAbsent, Claim: "username"},
+			},
+			mutate:    func(c map[string]any) { c["username"] = "alice" },
+			wantClass: "user",
+		},
+		{
+			name: "claim_absent treats a present-but-empty-string claim as absent",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimAbsent, Claim: "username"},
+			},
+			mutate:    func(c map[string]any) { c["username"] = "" },
+			wantClass: "machine",
+		},
+		{
+			name: "claim_absent treats a present-but-empty-array claim as absent",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimAbsent, Claim: "username"},
+			},
+			mutate:    func(c map[string]any) { c["username"] = []any{} },
+			wantClass: "machine",
+		},
+		{
+			name: "claim_present does not match a present-but-empty-string claim",
+			rules: []PrincipalClassRule{
+				{Class: "human", Predicate: PredicateClaimPresent, Claim: "username"},
+			},
+			mutate:    func(c map[string]any) { c["username"] = "" },
+			wantClass: "user",
+		},
+		{
+			name: "claim_present matches when username set",
+			rules: []PrincipalClassRule{
+				{Class: "human", Predicate: PredicateClaimPresent, Claim: "username"},
+			},
+			mutate:    func(c map[string]any) { c["username"] = "alice" },
+			wantClass: "human",
+		},
+		{
+			name: "claim equals matches Auth0 grant-type marker",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimEquals, Claim: "gty", Value: "client-credentials"},
+			},
+			mutate:    func(c map[string]any) { c["gty"] = "client-credentials" },
+			wantClass: "machine",
+		},
+		{
+			name: "claim equals matches a value inside a string array",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateClaimEquals, Claim: "roles", Value: "service"},
+			},
+			mutate:    func(c map[string]any) { c["roles"] = []any{"other", "service"} },
+			wantClass: "machine",
+		},
+		{
+			name: "scope_contains matches an M2M-only scope in the scope string",
+			rules: []PrincipalClassRule{
+				{Class: "machine", Predicate: PredicateScopeContains, Value: "postern/m2m"},
+			},
+			mutate:    func(c map[string]any) { c["scope"] = "openid postern/ssh postern/m2m" },
+			wantClass: "machine",
+		},
+		{
+			name: "first matching rule wins over a later rule",
+			rules: []PrincipalClassRule{
+				{Class: "first", Predicate: PredicateClaimAbsent, Claim: "username"},
+				{Class: "second", Predicate: PredicateClaimPresent, Claim: "sub"},
+			},
+			wantClass: "first",
+		},
+	}
+
+	fixture := newOIDCFixture(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := fixture.newClassifyingVerifier(t, "", tc.rules)
+			now := time.Now()
+			claims := map[string]any{
+				"iss":       fixture.server.URL,
+				"sub":       "caller-1",
+				"aud":       []string{"https://broker.example.com"},
+				"scope":     "openid postern/ssh",
+				"token_use": "access",
+				"iat":       now.Unix(),
+				"exp":       now.Add(time.Hour).Unix(),
+			}
+			if tc.mutate != nil {
+				tc.mutate(claims)
+			}
+			token := fixture.signToken(t, claims)
+
+			got, err := verifier.VerifyAccessToken(context.Background(), token)
+			if err != nil {
+				t.Fatalf("VerifyAccessToken() error = %v", err)
+			}
+			if got.Class != tc.wantClass {
+				t.Fatalf("class = %q, want %q", got.Class, tc.wantClass)
+			}
+		})
+	}
+}
+
+// TestClassifyHonorsConfiguredDefault locks the operator-set default class is
+// used when no rule matches.
+func TestClassifyHonorsConfiguredDefault(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	verifier := fixture.newClassifyingVerifier(t, "robot", nil)
+	now := time.Now()
+	token := fixture.signToken(t, map[string]any{
+		"iss":       fixture.server.URL,
+		"sub":       "caller-1",
+		"aud":       []string{"https://broker.example.com"},
+		"scope":     "openid postern/ssh",
+		"token_use": "access",
+		"iat":       now.Unix(),
+		"exp":       now.Add(time.Hour).Unix(),
+	})
+
+	got, err := verifier.VerifyAccessToken(context.Background(), token)
+	if err != nil {
+		t.Fatalf("VerifyAccessToken() error = %v", err)
+	}
+	if got.Class != "robot" {
+		t.Fatalf("class = %q, want %q", got.Class, "robot")
+	}
+}
+
+// TestVerifyAccessTokenReadsClientID locks the standard client_id claim read,
+// present and absent.
+func TestVerifyAccessTokenReadsClientID(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	verifier := fixture.newVerifier(t, "https://broker.example.com", "postern/ssh")
+	now := time.Now()
+	base := func() map[string]any {
+		return map[string]any{
+			"iss":       fixture.server.URL,
+			"sub":       "caller-1",
+			"aud":       []string{"https://broker.example.com"},
+			"scope":     "openid postern/ssh",
+			"token_use": "access",
+			"iat":       now.Unix(),
+			"exp":       now.Add(time.Hour).Unix(),
+		}
+	}
+
+	withClient := base()
+	withClient["client_id"] = "m2m-client-7"
+	got, err := verifier.VerifyAccessToken(context.Background(), fixture.signToken(t, withClient))
+	if err != nil {
+		t.Fatalf("VerifyAccessToken() error = %v", err)
+	}
+	if got.ClientID != "m2m-client-7" {
+		t.Fatalf("client_id = %q, want %q", got.ClientID, "m2m-client-7")
+	}
+
+	got, err = verifier.VerifyAccessToken(context.Background(), fixture.signToken(t, base()))
+	if err != nil {
+		t.Fatalf("VerifyAccessToken() error = %v", err)
+	}
+	if got.ClientID != "" {
+		t.Fatalf("client_id = %q, want empty when claim absent", got.ClientID)
+	}
+}
+
 // oidcFixture is a self-hosted EdDSA OIDC provider for verifier tests. It
 // publishes discovery + JWKS via httptest.Server and signs tokens with a local
 // ed25519 keypair so test cases can exercise each rejection branch without a
@@ -277,6 +466,23 @@ func (f *oidcFixture) newVerifier(t *testing.T, audience string, requiredScope s
 		Issuer:        f.server.URL,
 		Audience:      audience,
 		RequiredScope: requiredScope,
+	})
+	if err != nil {
+		t.Fatalf("NewOIDCVerifier() error = %v", err)
+	}
+	return verifier
+}
+
+// newClassifyingVerifier builds a verifier with a fixed audience/scope plus a
+// principal-class default and rule list, for classification tests.
+func (f *oidcFixture) newClassifyingVerifier(t *testing.T, defaultClass string, rules []PrincipalClassRule) *OIDCVerifier {
+	t.Helper()
+	verifier, err := NewOIDCVerifier(context.Background(), OIDCVerifierConfig{
+		Issuer:                f.server.URL,
+		Audience:              "https://broker.example.com",
+		RequiredScope:         "postern/ssh",
+		DefaultPrincipalClass: defaultClass,
+		PrincipalClassRules:   rules,
 	})
 	if err != nil {
 		t.Fatalf("NewOIDCVerifier() error = %v", err)

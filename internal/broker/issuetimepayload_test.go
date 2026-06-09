@@ -28,10 +28,12 @@ func TestIssueTimePayloadHappyPathProducesVerifiableJWS(t *testing.T) {
 	policy := &recordingPolicy{}
 	rateLimiter := &recordingRateLimiter{}
 	issuer := newTestTimePayloadIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{
-			Subject: "sub-123",
-			Email:   "engineer@example.com",
-			Groups:  []string{"postern-engineers"},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{
+			Subject:  "sub-123",
+			Email:    "engineer@example.com",
+			Groups:   []string{"postern-engineers"},
+			Class:    "user",
+			ClientID: "cli-app-7",
 		}},
 		Registry:    registry,
 		Policy:      policy,
@@ -139,6 +141,14 @@ func TestIssueTimePayloadHappyPathProducesVerifiableJWS(t *testing.T) {
 	}
 	if got, want := audit.events[0].PrincipalType, ModeTimefix; got != want {
 		t.Fatalf("audit.principal_type = %q, want %q", got, want)
+	}
+	for _, ev := range audit.events {
+		if ev.PrincipalClass != "user" {
+			t.Fatalf("event %q principal_class = %q, want %q", ev.Event, ev.PrincipalClass, "user")
+		}
+		if ev.ClientID != "cli-app-7" {
+			t.Fatalf("event %q client_id = %q, want %q", ev.Event, ev.ClientID, "cli-app-7")
+		}
 	}
 	if got, want := policy.request.Mode, ModeTimefix; got != want {
 		t.Fatalf("policy.mode = %q, want %q", got, want)
@@ -274,7 +284,7 @@ func TestIssueTimePayloadPipelineFailureModes(t *testing.T) {
 			signer := &recordingSigner{publicKey: caSSHSigner.PublicKey(), inner: caSSHSigner, timePayloadErr: tc.signerErr}
 
 			deps := testDeps{
-				TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}, err: tc.verifierErr},
+				TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}, err: tc.verifierErr},
 				Registry:      registry,
 				Policy:        policy,
 				RateLimiter:   rateLimiter,
@@ -363,7 +373,7 @@ func TestIssueTimePayloadSignerFailureEmitsSignerFailureReason(t *testing.T) {
 	audit := &recordingAudit{}
 	signer := &recordingSigner{publicKey: caSSHSigner.PublicKey(), inner: caSSHSigner, timePayloadErr: errors.New("kms down")}
 	issuer := newTestTimePayloadIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{},
@@ -408,7 +418,7 @@ func TestIssueTimePayloadPostSignAuditFailureBestEffort(t *testing.T) {
 	_, caSSHSigner := newTestEd25519SSHSigner(t)
 	audit := &recordingAudit{errs: []error{nil, errors.New("cloudwatch flake on issued")}}
 	issuer := newTestTimePayloadIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      &recordingRegistry{device: DeviceRecord{Serial: "SERIAL123"}},
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{},
@@ -442,7 +452,7 @@ func TestIssueTimePayloadPostSignAuditFailureBestEffort(t *testing.T) {
 func TestIssueTimePayloadSkipsRegistryOnRateLimitDenial(t *testing.T) {
 	registry := &recordingRegistry{device: DeviceRecord{Serial: "should-not-be-resolved"}}
 	issuer := newTestTimePayloadIssuer(t, testDeps{
-		TokenVerifier: fixedTokenVerifier{claims: EngineerClaims{Subject: "sub-123"}},
+		TokenVerifier: fixedTokenVerifier{claims: CallerClaims{Subject: "sub-123"}},
 		Registry:      registry,
 		Policy:        &recordingPolicy{},
 		RateLimiter:   &recordingRateLimiter{err: Error{StatusCode: http.StatusTooManyRequests, Message: "rate limit exceeded"}},

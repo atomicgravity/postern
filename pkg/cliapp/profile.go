@@ -26,6 +26,16 @@ const (
 	DefaultSSHUser = "engineer"
 
 	ProfileFlagName = "profile"
+
+	// GrantAuthorizationCode is the default OAuth grant: the browser-based
+	// PKCE authorization-code flow for human engineers. An empty grant is
+	// treated as this value.
+	GrantAuthorizationCode = "authorization_code"
+
+	// GrantClientCredentials selects the OAuth 2.0 client-credentials flow
+	// for automated callers (service accounts). It is browserless and needs
+	// no cached refresh token: the client_id + secret re-mint on demand.
+	GrantClientCredentials = "client_credentials"
 )
 
 var (
@@ -35,6 +45,7 @@ var (
 	ErrIDPIssuerNotHTTPS           = errors.New("idp.issuer must use https (the CLI fetches discovery + JWKs over this scheme and runs the OAuth flow against it; plaintext exposes the authorization code, refresh token, and tokens to network MITM)")
 	ErrIDPClientIDRequired         = errors.New("idp.client_id is required")
 	ErrIDPAudienceOrScopesRequired = errors.New("one of idp.audience or idp.scopes is required")
+	ErrIDPUnknownGrant             = errors.New("idp.grant must be empty, \"authorization_code\", or \"client_credentials\"")
 )
 
 // Profile is a single named CLI profile: broker URL + IdP details.
@@ -52,12 +63,25 @@ type Profile struct {
 
 // IDPConfig holds the OIDC client details. At least one of Audience or
 // Scopes must be set so the access token can be bound to this broker.
+//
+// Grant selects the OAuth flow: empty or "authorization_code" runs the
+// browser PKCE flow for human engineers; "client_credentials" runs the
+// browserless service-account flow. The client secret for the
+// client-credentials flow is never read from this struct (or the config
+// file) — it is sourced from <PREFIX>_IDP_CLIENT_SECRET at use time.
 type IDPConfig struct {
 	Issuer        string `yaml:"issuer"`
 	ClientID      string `yaml:"client_id"`
 	Audience      string `yaml:"audience,omitempty"`
 	AudienceParam string `yaml:"audience_param,omitempty"`
 	Scopes        string `yaml:"scopes,omitempty"`
+	Grant         string `yaml:"grant,omitempty"`
+}
+
+// usesClientCredentials reports whether the profile selects the
+// client-credentials grant.
+func (c IDPConfig) usesClientCredentials() bool {
+	return c.Grant == GrantClientCredentials
 }
 
 // ResolvedProfile is a Profile after name selection, env-override merge,
@@ -191,6 +215,11 @@ func (p Profile) Validate() error {
 	}
 	if p.IDP.Audience == "" && p.IDP.Scopes == "" {
 		errs = append(errs, ErrIDPAudienceOrScopesRequired)
+	}
+	switch p.IDP.Grant {
+	case "", GrantAuthorizationCode, GrantClientCredentials:
+	default:
+		errs = append(errs, ErrIDPUnknownGrant)
 	}
 	return errors.Join(errs...)
 }

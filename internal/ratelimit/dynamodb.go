@@ -79,7 +79,7 @@ func NewDynamoDBRateLimiterWithOptions(client DynamoDBClient, table string, limi
 // Allow returns nil if the engineer has remaining budget in the current
 // window or a 429 broker.Error when the predicate fails.
 func (l *DynamoDBRateLimiter) Allow(ctx context.Context, request broker.RateLimitRequest) error {
-	engineerSub := strings.TrimSpace(request.Engineer.Subject)
+	engineerSub := strings.TrimSpace(request.Caller.Subject)
 	if engineerSub == "" {
 		return broker.Error{StatusCode: http.StatusUnauthorized, Message: "engineer subject is required"}
 	}

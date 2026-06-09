@@ -595,7 +595,7 @@ func newTimefixTestRuntimeRealBroker(t *testing.T) (runtime, *timefixTestHarness
 	caSigner := newBrokerTestSigner(t)
 	issuer, err := broker.NewSSHCertIssuer(broker.SSHCertIssuerDeps{
 		PipelineDeps: broker.PipelineDeps{
-			TokenVerifier: fixedBrokerTokenVerifier{claims: broker.EngineerClaims{
+			TokenVerifier: fixedBrokerTokenVerifier{claims: broker.CallerClaims{
 				Subject: "test-engineer",
 				Email:   "engineer@example.com",
 			}},
@@ -724,11 +724,11 @@ func newBrokerTestSigner(t *testing.T) ssh.Signer {
 }
 
 type fixedBrokerTokenVerifier struct {
-	claims broker.EngineerClaims
+	claims broker.CallerClaims
 	err    error
 }
 
-func (v fixedBrokerTokenVerifier) VerifyAccessToken(context.Context, string) (broker.EngineerClaims, error) {
+func (v fixedBrokerTokenVerifier) VerifyAccessToken(context.Context, string) (broker.CallerClaims, error) {
 	return v.claims, v.err
 }
 

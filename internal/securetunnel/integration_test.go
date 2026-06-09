@@ -83,7 +83,7 @@ func TestTunnelingEndToEnd_HappyPath(t *testing.T) {
 	auditRecorder := &integrationAudit{}
 	issuer, err := broker.NewTunnelIssuer(broker.TunnelIssuerDeps{
 		PipelineDeps: broker.PipelineDeps{
-			TokenVerifier: integrationTokenVerifier{claims: broker.EngineerClaims{
+			TokenVerifier: integrationTokenVerifier{claims: broker.CallerClaims{
 				Subject: "engineer-42",
 				Email:   "engineer@example.com",
 				Groups:  []string{"postern-engineers"},
@@ -224,14 +224,14 @@ func (t *integrationFakeTunneling) OpenTunnel(_ context.Context, request broker.
 }
 
 // integrationTokenVerifier accepts any access token and returns canned
-// EngineerClaims. The broker pipeline only consults VerifyAccessToken's
+// CallerClaims. The broker pipeline only consults VerifyAccessToken's
 // return value; the token bytes themselves don't propagate beyond
 // preamble.
 type integrationTokenVerifier struct {
-	claims broker.EngineerClaims
+	claims broker.CallerClaims
 }
 
-func (v integrationTokenVerifier) VerifyAccessToken(context.Context, string) (broker.EngineerClaims, error) {
+func (v integrationTokenVerifier) VerifyAccessToken(context.Context, string) (broker.CallerClaims, error) {
 	return v.claims, nil
 }
 

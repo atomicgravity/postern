@@ -169,6 +169,94 @@ func TestAllowContextOverlayDoesNotShadowReservedKeys(t *testing.T) {
 	}
 }
 
+// TestAllowEmitsPrincipalClassAndClientID locks that contextMap surfaces the
+// broker-derived principal class (always) and the client_id (when non-empty)
+// so Cedar policies can branch on caller class and machine-client identity.
+func TestAllowEmitsPrincipalClassAndClientID(t *testing.T) {
+	fake := &fakeAVPClient{decision: types.DecisionAllow}
+	policy, err := NewAVPPolicy(fake, "store-class")
+	if err != nil {
+		t.Fatalf("NewAVPPolicy() error = %v", err)
+	}
+
+	request := validRequest()
+	request.Caller = broker.CallerClaims{Subject: "sub-1", Class: "machine", ClientID: "client-abc"}
+	if err := policy.Allow(context.Background(), request); err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+
+	contextMap, ok := fake.calls[0].Context.(*types.ContextDefinitionMemberContextMap)
+	if !ok {
+		t.Fatalf("context = %T, want *ContextDefinitionMemberContextMap", fake.calls[0].Context)
+	}
+	if got := stringAttr(t, contextMap.Value["principal_class"]); got != "machine" {
+		t.Fatalf("context.principal_class = %q, want %q", got, "machine")
+	}
+	if got := stringAttr(t, contextMap.Value["client_id"]); got != "client-abc" {
+		t.Fatalf("context.client_id = %q, want %q", got, "client-abc")
+	}
+}
+
+// TestAllowOmitsClientIDWhenAbsent locks that a human caller (no client_id)
+// produces no client_id context attribute rather than an empty string a policy
+// might accidentally match, while principal_class is still always present.
+func TestAllowOmitsClientIDWhenAbsent(t *testing.T) {
+	fake := &fakeAVPClient{decision: types.DecisionAllow}
+	policy, err := NewAVPPolicy(fake, "store-class-absent")
+	if err != nil {
+		t.Fatalf("NewAVPPolicy() error = %v", err)
+	}
+
+	request := validRequest()
+	request.Caller = broker.CallerClaims{Subject: "sub-1", Class: "user"}
+	if err := policy.Allow(context.Background(), request); err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+
+	contextMap, ok := fake.calls[0].Context.(*types.ContextDefinitionMemberContextMap)
+	if !ok {
+		t.Fatalf("context = %T, want *ContextDefinitionMemberContextMap", fake.calls[0].Context)
+	}
+	if got := stringAttr(t, contextMap.Value["principal_class"]); got != "user" {
+		t.Fatalf("context.principal_class = %q, want %q", got, "user")
+	}
+	if _, present := contextMap.Value["client_id"]; present {
+		t.Fatalf("context.client_id present for a caller without one: %#v", contextMap.Value)
+	}
+}
+
+// TestAllowContextOverlayDoesNotShadowClassKeys locks that a request-supplied
+// Context overlay cannot override the broker-derived principal_class or
+// client_id, the same reserved-key guard the source_ip/request_id keys carry.
+func TestAllowContextOverlayDoesNotShadowClassKeys(t *testing.T) {
+	fake := &fakeAVPClient{decision: types.DecisionAllow}
+	policy, err := NewAVPPolicy(fake, "store-class-shadow")
+	if err != nil {
+		t.Fatalf("NewAVPPolicy() error = %v", err)
+	}
+
+	request := validRequest()
+	request.Caller = broker.CallerClaims{Subject: "sub-1", Class: "machine", ClientID: "client-abc"}
+	request.Context = map[string]any{
+		"principal_class": "user",
+		"client_id":       "spoofed-client",
+	}
+	if err := policy.Allow(context.Background(), request); err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+
+	contextMap, ok := fake.calls[0].Context.(*types.ContextDefinitionMemberContextMap)
+	if !ok {
+		t.Fatalf("context = %T, want *ContextDefinitionMemberContextMap", fake.calls[0].Context)
+	}
+	if got := stringAttr(t, contextMap.Value["principal_class"]); got != "machine" {
+		t.Fatalf("context.principal_class = %q, want %q (shadowed by Context overlay?)", got, "machine")
+	}
+	if got := stringAttr(t, contextMap.Value["client_id"]); got != "client-abc" {
+		t.Fatalf("context.client_id = %q, want %q (shadowed by Context overlay?)", got, "client-abc")
+	}
+}
+
 func TestAllowReturnsNilOnDecisionAllow(t *testing.T) {
 	fake := &fakeAVPClient{decision: types.DecisionAllow}
 	policy, err := NewAVPPolicy(fake, "store-1")
@@ -354,7 +442,7 @@ func validRequest() broker.PolicyRequest {
 	return broker.PolicyRequest{
 		AccessToken: "test-access-token",
 		Mode:        broker.ModeOperator,
-		Engineer:    broker.EngineerClaims{Subject: "engineer-1234"},
+		Caller:      broker.CallerClaims{Subject: "engineer-1234"},
 		Device: broker.DeviceRecord{
 			Serial:     "SERIAL123",
 			FriendlyID: "prod-a012",

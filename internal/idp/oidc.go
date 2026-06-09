@@ -41,24 +41,76 @@ const (
 	maxEmailRunes   = 320
 	maxGroupEntries = 64
 	maxGroupRunes   = 64
+
+	// DefaultPrincipalClass is the class stamped on a verified token when no
+	// configured rule matches (and the fallback when no default is set).
+	DefaultPrincipalClass = "user"
+
+	// MaxPrincipalClassRunes bounds a configured class name so a misconfigured
+	// rule can't bloat the audit row or Cedar context with an arbitrarily long
+	// string.
+	MaxPrincipalClassRunes = 64
 )
+
+// PrincipalClassPredicate is the per-rule predicate kind a PrincipalClassRule
+// evaluates against the parsed claim map. Exactly one kind applies per rule.
+type PrincipalClassPredicate int
+
+const (
+	// PredicateClaimPresent matches when the named claim exists and is
+	// non-empty.
+	PredicateClaimPresent PrincipalClassPredicate = iota
+
+	// PredicateClaimAbsent matches when the named claim is missing or empty —
+	// the signal Cognito client-credentials tokens carry (no `username`).
+	PredicateClaimAbsent
+
+	// PredicateClaimEquals matches when the named claim is a string equal to
+	// Value, or a string array containing it.
+	PredicateClaimEquals
+
+	// PredicateScopeContains matches when the space-delimited `scope` string
+	// or the `scp` array contains Value.
+	PredicateScopeContains
+)
+
+// PrincipalClassRule maps a single claim predicate to a class name. The
+// verifier evaluates a configured ordered list top-to-bottom, first match
+// wins. Claim names the claim key the predicate inspects (unused for
+// PredicateScopeContains, which always reads `scope`/`scp`); Value is the
+// comparison value for the equals/scope predicates.
+type PrincipalClassRule struct {
+	Class     string
+	Predicate PrincipalClassPredicate
+	Claim     string
+	Value     string
+}
 
 // OIDCVerifierConfig configures an OIDCVerifier. Issuer is the OIDC issuer
 // URL for discovery and JWKs fetch. At least one of Audience or
 // RequiredScope must be set.
+//
+// DefaultPrincipalClass is the class stamped when no PrincipalClassRule
+// matches; empty resolves to DefaultPrincipalClass ("user"). PrincipalClassRules
+// is the ordered first-match rule list; an empty list classifies every caller
+// as the default class.
 type OIDCVerifierConfig struct {
-	Issuer        string
-	Audience      string
-	RequiredScope string
+	Issuer                string
+	Audience              string
+	RequiredScope         string
+	DefaultPrincipalClass string
+	PrincipalClassRules   []PrincipalClassRule
 }
 
 // OIDCVerifier validates IdP-issued access tokens against the configured
-// audience and/or required scope and returns broker.EngineerClaims for
+// audience and/or required scope and returns broker.CallerClaims for
 // Policy evaluation.
 type OIDCVerifier struct {
 	verifier      *oidc.IDTokenVerifier
 	audience      string
 	requiredScope string
+	defaultClass  string
+	classRules    []PrincipalClassRule
 	now           func() time.Time
 }
 
@@ -67,6 +119,11 @@ func NewOIDCVerifier(ctx context.Context, config OIDCVerifierConfig) (*OIDCVerif
 	requiredScope := strings.TrimSpace(config.RequiredScope)
 	if audience == "" && requiredScope == "" {
 		return nil, ErrAudienceOrScopeRequired
+	}
+
+	defaultClass := strings.TrimSpace(config.DefaultPrincipalClass)
+	if defaultClass == "" {
+		defaultClass = DefaultPrincipalClass
 	}
 
 	provider, err := oidc.NewProvider(ctx, strings.TrimSpace(config.Issuer))
@@ -89,53 +146,57 @@ func NewOIDCVerifier(ctx context.Context, config OIDCVerifierConfig) (*OIDCVerif
 		}),
 		audience:      audience,
 		requiredScope: requiredScope,
+		defaultClass:  defaultClass,
+		classRules:    config.PrincipalClassRules,
 		now:           time.Now,
 	}, nil
 }
 
-// VerifyAccessToken validates the access token and returns EngineerClaims.
+// VerifyAccessToken validates the access token and returns CallerClaims.
 // The token must carry the configured audience and/or required scope;
 // Cognito's token_use claim, if present, must be "access" to defend against
-// ID-token-as-access-token misuse.
-func (v *OIDCVerifier) VerifyAccessToken(ctx context.Context, accessToken string) (broker.EngineerClaims, error) {
+// ID-token-as-access-token misuse. The returned claims carry the principal
+// class derived from the configured rule list and the standard client_id
+// claim.
+func (v *OIDCVerifier) VerifyAccessToken(ctx context.Context, accessToken string) (broker.CallerClaims, error) {
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
-		return broker.EngineerClaims{}, errors.New("access token is required")
+		return broker.CallerClaims{}, errors.New("access token is required")
 	}
 
 	token, err := v.verifier.Verify(ctx, accessToken)
 	if err != nil {
-		return broker.EngineerClaims{}, err
+		return broker.CallerClaims{}, err
 	}
 
 	var claims accessTokenClaims
 	if err := token.Claims(&claims); err != nil {
-		return broker.EngineerClaims{}, err
+		return broker.CallerClaims{}, err
 	}
 
 	var raw map[string]any
 	if err := token.Claims(&raw); err != nil {
-		return broker.EngineerClaims{}, err
+		return broker.CallerClaims{}, err
 	}
 
 	if claims.TokenUse != "" && claims.TokenUse != "access" {
-		return broker.EngineerClaims{}, errors.New("token_use must be access")
+		return broker.CallerClaims{}, errors.New("token_use must be access")
 	}
 	if v.audience != "" && !slices.Contains(token.Audience, v.audience) {
-		return broker.EngineerClaims{}, errors.New("access token missing required audience")
+		return broker.CallerClaims{}, errors.New("access token missing required audience")
 	}
 	if v.requiredScope != "" && !hasScope(claims.Scope, claims.SCP, v.requiredScope) {
-		return broker.EngineerClaims{}, errors.New("access token missing required scope")
+		return broker.CallerClaims{}, errors.New("access token missing required scope")
 	}
 
 	if claims.IssuedAt != 0 {
 		iat := time.Unix(claims.IssuedAt, 0)
 		now := v.now()
 		if iat.After(now.Add(iatFutureSkew)) {
-			return broker.EngineerClaims{}, errors.New("access token iat is in the future")
+			return broker.CallerClaims{}, errors.New("access token iat is in the future")
 		}
 		if iat.Before(now.Add(-iatMaxAge)) {
-			return broker.EngineerClaims{}, fmt.Errorf("access token iat exceeds maximum age (%v)", iatMaxAge)
+			return broker.CallerClaims{}, fmt.Errorf("access token iat exceeds maximum age (%v)", iatMaxAge)
 		}
 	}
 
@@ -145,7 +206,7 @@ func (v *OIDCVerifier) VerifyAccessToken(ctx context.Context, accessToken string
 	// rate-limit budget (the conditional UpdateItem would key on an
 	// empty partition, shared across all sub-less callers).
 	if strings.TrimSpace(claims.Subject) == "" {
-		return broker.EngineerClaims{}, errors.New("access token sub claim is required")
+		return broker.CallerClaims{}, errors.New("access token sub claim is required")
 	}
 
 	// Reject over-length sub rather than truncating. Silent truncation
@@ -154,18 +215,104 @@ func (v *OIDCVerifier) VerifyAccessToken(ctx context.Context, accessToken string
 	// — the audit row, rate-limit bucket, and cert KeyId would attribute
 	// to the victim while AVP saw the attacker's full sub.
 	if utf8.RuneCountInString(claims.Subject) > maxSubjectRunes {
-		return broker.EngineerClaims{}, fmt.Errorf("access token sub exceeds %d runes", maxSubjectRunes)
+		return broker.CallerClaims{}, fmt.Errorf("access token sub exceeds %d runes", maxSubjectRunes)
 	}
 	if utf8.RuneCountInString(claims.Email) > maxEmailRunes {
-		return broker.EngineerClaims{}, fmt.Errorf("access token email exceeds %d runes", maxEmailRunes)
+		return broker.CallerClaims{}, fmt.Errorf("access token email exceeds %d runes", maxEmailRunes)
 	}
 
-	return broker.EngineerClaims{
-		Subject: claims.Subject,
-		Email:   claims.Email,
-		Groups:  capGroups(mergedGroups(claims.Groups, claims.CognitoGroups), maxGroupEntries, maxGroupRunes),
-		Raw:     raw,
+	return broker.CallerClaims{
+		Subject:  claims.Subject,
+		Email:    claims.Email,
+		Groups:   capGroups(mergedGroups(claims.Groups, claims.CognitoGroups), maxGroupEntries, maxGroupRunes),
+		Class:    v.classify(raw),
+		ClientID: claims.ClientID,
+		Raw:      raw,
 	}, nil
+}
+
+// classify evaluates the configured first-match rule list against the parsed
+// claim map and returns the matching class, falling back to the default class
+// when no rule matches. The verifier holds the class as the single source of
+// truth consumed by cert TTL, audit, and the Cedar context.
+func (v *OIDCVerifier) classify(raw map[string]any) string {
+	for _, rule := range v.classRules {
+		if rule.matches(raw) {
+			return rule.Class
+		}
+	}
+	return v.defaultClass
+}
+
+// matches reports whether the rule's predicate holds against the claim map.
+func (r PrincipalClassRule) matches(raw map[string]any) bool {
+	switch r.Predicate {
+	case PredicateClaimPresent:
+		return claimPresent(raw[r.Claim])
+	case PredicateClaimAbsent:
+		return !claimPresent(raw[r.Claim])
+	case PredicateClaimEquals:
+		return claimEquals(raw[r.Claim], r.Value)
+	case PredicateScopeContains:
+		return scopeContains(raw, r.Value)
+	default:
+		return false
+	}
+}
+
+// claimPresent reports whether a claim value is present and non-empty. A
+// string claim counts as present only when it has non-whitespace content; a
+// string array counts when it has at least one element; other non-nil JSON
+// scalars (numbers, booleans) count as present.
+func claimPresent(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) > 0
+	case []string:
+		return len(typed) > 0
+	default:
+		return true
+	}
+}
+
+// claimEquals reports whether the claim is a string equal to want, or a string
+// array containing it.
+func claimEquals(value any, want string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == want
+	case []any:
+		for _, element := range typed {
+			if str, ok := element.(string); ok && str == want {
+				return true
+			}
+		}
+	case []string:
+		return slices.Contains(typed, want)
+	}
+	return false
+}
+
+// scopeContains reports whether the space-delimited `scope` string or the
+// `scp` array in the claim map contains want.
+func scopeContains(raw map[string]any, want string) bool {
+	if scope, ok := raw["scope"].(string); ok {
+		if slices.Contains(strings.Fields(scope), want) {
+			return true
+		}
+	}
+	if scp, ok := raw["scp"].([]any); ok {
+		for _, element := range scp {
+			if str, ok := element.(string); ok && str == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // capGroups truncates a groups list at maxEntries with each entry bounded
@@ -183,6 +330,7 @@ func capGroups(groups []string, maxEntries int, maxRunesPerEntry int) []string {
 type accessTokenClaims struct {
 	Subject       string   `json:"sub"`
 	Email         string   `json:"email"`
+	ClientID      string   `json:"client_id"`
 	Scope         string   `json:"scope"`
 	SCP           []string `json:"scp"`
 	Groups        []string `json:"groups"`

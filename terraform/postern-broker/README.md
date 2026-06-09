@@ -68,6 +68,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `tags` | Map applied to every taggable resource. |
 | `idp_issuer` | OIDC issuer URL for broker token validation. |
 | `idp_audience` / `idp_required_scope` | At least one is required; how the broker scopes accepted tokens. |
+| `idp_principal_classes_json` | JSON (or YAML) document of principal-classification rules, set on the broker via `POSTERN_IDP_PRINCIPAL_CLASSES`. Empty (default) classifies every caller as `user`. See "Principal classes" below. |
 | `avp_identity_source_type` | `"cognito"` or `"oidc"`. |
 | `avp_cognito_user_pool_arn`, `avp_cognito_client_ids` | Required when type is `"cognito"`. |
 | `avp_oidc_issuer`, `avp_oidc_audiences`, `avp_oidc_principal_id_claim`, `avp_oidc_entity_id_prefix` | Required when type is `"oidc"`. |
@@ -123,6 +124,21 @@ The cognito sample is standalone — this module does not import it. With the cu
 ## Authorization (Cedar)
 
 The starter Cedar policy at `cedar/starter.cedar` permits any authenticated principal to mint an operator certificate for any device. Tighten as your access model matures — by group, by device tag, by source IP, by time of day. The schema at `cedar/schema.json` declares the entities and context attributes the broker passes to AVP; extend it as your policies need to reference more attributes. The broker's hot-path call is `IsAuthorizedWithToken` — no policy redeploy beyond `terraform apply` after editing the Cedar files.
+
+### Principal classes
+
+To distinguish automated callers (OAuth2 client-credentials / service accounts) from humans, the broker classifies each caller from its token claims and emits `context.principal_class` (e.g. `user` / `machine`) and `context.client_id` (the issuing client, when present), alongside the existing `context.source_ip`. Policies branch on them — the starter policy demonstrates permitting one specific `machine` `client_id` only from a pinned `source_ip`. The broker also passes `context.requested_cert_ttl_minutes` (the per-class-clamped certificate lifetime) for `when { context.requested_cert_ttl_minutes <= N }` gating, mirroring the tunnel's `requested_max_lifetime_minutes`.
+
+Configure the rules with `idp_principal_classes_json` — an ordered first-match list, set on the Lambda as `POSTERN_IDP_PRINCIPAL_CLASSES`:
+
+```hcl
+idp_principal_classes_json = jsonencode({
+  default = "user"
+  rules   = [{ class = "machine", claim_absent = "username" }]
+})
+```
+
+Each rule sets exactly one predicate: `claim_present`, `claim_absent`, `claim` + `equals`, or `scope_contains`. The `claim_absent = "username"` rule above is the Cognito M2M signal (client-credentials tokens carry no `username`). With no rules configured, every caller is the default class.
 
 Two ways to manage your own policies alongside (or instead of) the starter:
 
