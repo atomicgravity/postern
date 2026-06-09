@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/atomicgravity/postern/compare/v1.4.0...v1.4.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **broker:** accept a token matching either configured audience or scope ([3d202df](https://github.com/atomicgravity/postern/commit/3d202dffee0180e25dc2df718085cf271403d361))
+
 ## [1.4.0](https://github.com/atomicgravity/postern/compare/v1.3.0...v1.4.0) (2026-06-09)
 
 
