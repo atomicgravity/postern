@@ -105,6 +105,10 @@ Two non-negotiables here. **`Profile.WithDefaults` must NOT inject `DefaultSSHUs
 
 `addhost` and `tunnel_open` discard the explicit bool — they always write a concrete User into the stanza they own. `ssh` and `scp` consume the bool. New consumers (e.g. a future `rsync` wrapper) should go through `resolveUser` the same way, not reimplement the chain locally.
 
+### Only `setup-ssh` writes `~/.ssh/config`
+
+`postern setup-ssh` is the single explicit, user-invoked command allowed to write `~/.ssh/config` (it prepends the `Include` for the Postern-managed ssh.conf). The implicit paths — `add-host`, `mint`, `tunnel` — stay read-only on `~/.ssh/config`; they only detect the Include and point the engineer at `setup-ssh`. Don't make them write it.
+
 ### Default Policy is AVP
 
 The v1 default `Policy` impl is **Amazon Verified Permissions** (Cedar-as-a-service), called via `IsAuthorizedWithToken`. Cedar policies live in an AVP policy store; broker config has one knob (`policy.avp_policy_store_id`). Policy changes don't require broker redeploy; CloudTrail logs every authorization decision. Consistent with the rest of the AWS-native v1 stack (KMS, IoT, CloudWatch, DynamoDB).

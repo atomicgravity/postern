@@ -2,7 +2,6 @@ package cliapp
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,7 +18,6 @@ const (
 	addHostIPFlag     = "ip"
 	addHostPortFlag   = "port"
 	addHostUserFlag   = "user"
-	addHostCheckFlag  = "check"
 	addHostNoMintFlag = "no-mint"
 )
 
@@ -28,21 +26,14 @@ func addHostCommand(rt runtime) *cobra.Command {
 		ip     string
 		port   int
 		user   string
-		check  bool
 		noMint bool
 	)
 
 	command := &cobra.Command{
 		Use:   "add-host <device-id>",
 		Short: "Register a device in the Postern-managed ssh-config (and mint a cert by default)",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if check {
-				return runAddHostCheck(cmd, rt)
-			}
-			if len(args) != 1 {
-				return errors.New("device id is required")
-			}
 			return runAddHost(cmd, rt, args[0], addHostOptions{IP: ip, Port: port, User: user, NoMint: noMint})
 		},
 	}
@@ -50,7 +41,6 @@ func addHostCommand(rt runtime) *cobra.Command {
 	command.Flags().StringVar(&ip, addHostIPFlag, "", "device IP or hostname to add as an additional Host match")
 	command.Flags().IntVar(&port, addHostPortFlag, 0, "non-default ssh port (omitted when 0)")
 	command.Flags().StringVar(&user, addHostUserFlag, "", "override the profile's default ssh user")
-	command.Flags().BoolVar(&check, addHostCheckFlag, false, "report whether ~/.ssh/config includes the Postern-managed file; exit non-zero if missing")
 	command.Flags().BoolVar(&noMint, addHostNoMintFlag, false, "skip the cert mint (offline staging / pre-grant); register the stanza only")
 
 	return command
@@ -123,22 +113,6 @@ func runAddHost(cmd *cobra.Command, rt runtime, deviceID string, options addHost
 	return writeAddHostSummary(cmd.OutOrStdout(), rt.binaryName, deviceID, writer.Path(), stanza, mintedCert, time.Now(), checkIncludePresence(writer.Path()))
 }
 
-func runAddHostCheck(cmd *cobra.Command, rt runtime) error {
-	writer, err := rt.openSSHConfWriter()
-	if err != nil {
-		return err
-	}
-
-	out := cmd.OutOrStdout()
-	if checkIncludePresence(writer.Path()) {
-		fmt.Fprintf(out, "Include line for %s is present in ~/.ssh/config.\n", writer.Path())
-		return nil
-	}
-	fmt.Fprintf(out, "Include line for %s is NOT present in ~/.ssh/config.\n", writer.Path())
-	fmt.Fprintf(out, "Add it with:\n  echo 'Include %s' >> ~/.ssh/config\n", displayIncludePath(writer.Path()))
-	return errors.New("missing Include line in ~/.ssh/config")
-}
-
 // writeAddHostSummary prints the post-Upsert confirmation plus include-line
 // guidance, naming the cert validity window when one was minted.
 func writeAddHostSummary(out io.Writer, binaryName, deviceID, sshConfPath string, stanza sshconf.Stanza, mintedCert *ssh.Certificate, now time.Time, includePresent bool) error {
@@ -181,30 +155,31 @@ func writeAddHostSummary(out io.Writer, binaryName, deviceID, sshConfPath string
 
 	if mintedCert != nil {
 		_, err := fmt.Fprintf(out, "\nThe line `Include %s` was NOT found in ~/.ssh/config.\n"+
-			"Add it manually (one-time setup):\n\n"+
-			"  echo 'Include %s' >> ~/.ssh/config\n\n"+
+			"Wire it up (one-time setup):\n\n"+
+			"  %s setup-ssh\n\n"+
 			"Then connect with:\n\n"+
 			"  ssh %s\n",
-			display, display, deviceID)
+			display, binaryName, deviceID)
 		return err
 	}
 
 	_, err := fmt.Fprintf(out, "\nThe line `Include %s` was NOT found in ~/.ssh/config.\n"+
-		"Add it manually (one-time setup):\n\n"+
-		"  echo 'Include %s' >> ~/.ssh/config\n\n"+
+		"Wire it up (one-time setup):\n\n"+
+		"  %s setup-ssh\n\n"+
 		"Then mint a cert and connect (--no-mint was used; cache is empty):\n\n"+
 		"  %s mint %s              # mints; subsequent `ssh %s` works until cert expiry\n",
-		display, display, binaryName, deviceID, deviceID)
+		display, binaryName, binaryName, deviceID, deviceID)
 	return err
 }
 
 // warnMissingInclude writes the "Include line missing" warning shared by
 // mint, tunnel_open, and add-host.
 func warnMissingInclude(w io.Writer, binaryName, sshConfPath, hostHint string) {
+	binaryName = resolveBinaryName(binaryName)
 	fmt.Fprintf(w,
 		"%s: warning — Include line for %s is NOT in ~/.ssh/config; `ssh %s` will fail\n"+
-			"  Add it with:  echo 'Include %s' >> ~/.ssh/config\n",
-		resolveBinaryName(binaryName), sshConfPath, hostHint, displayIncludePath(sshConfPath))
+			"  Wire it up with:  %s setup-ssh\n",
+		binaryName, displayIncludePath(sshConfPath), hostHint, binaryName)
 }
 
 // checkIncludePresence reports whether ~/.ssh/config has an Include
@@ -246,8 +221,8 @@ func checkIncludePresence(sshConfPath string) bool {
 	return false
 }
 
-// userSSHConfigPath returns ~/.ssh/config. Read-only — Postern never
-// writes here.
+// userSSHConfigPath returns ~/.ssh/config. Only setup-ssh writes here; every
+// other path treats it read-only.
 func userSSHConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

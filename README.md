@@ -71,7 +71,7 @@ git push widget-042:/srv/repo.git main
 sftp widget-042
 ```
 
-VSCode Remote-SSH "Connect to Host..." → `widget-042` → just works. Same goes for Cursor, JetBrains Gateway, and any other tool that reads `~/.ssh/config`. (The one-time `Include ~/.postern/ssh.conf` line in your `~/.ssh/config` is what wires this up; `postern add-host` prints it on first invocation and `postern add-host --check` reports whether it's wired.)
+VSCode Remote-SSH "Connect to Host..." → `widget-042` → just works. Same goes for Cursor, JetBrains Gateway, and any other tool that reads `~/.ssh/config`. (Run `postern setup-ssh` once to wire the Include into your `~/.ssh/config`; `postern setup-ssh --check` reports whether it's wired.)
 
 You can `add-host` as many devices as you like — they each get their own cert and stanza. Pick the right one with the device id; `postern ssh` (and the cached certs vanilla ssh uses) routes correctly.
 
@@ -184,6 +184,7 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 | `postern tunnel <device> [--user <name>] [--max-lifetime <dur>] [--port-only]` | Hold-open tunnel for VSCode-remote / rsync / git / multi-session workflows |
 | `postern add-host <device> --ip <ip> [--user <name>] [--port <n>]` | Register a device in `~/.postern/ssh.conf` (and mint a fresh cert) |
 | `postern remove-host <device>` | Drop a device's managed stanza |
+| `postern setup-ssh [--check]` | Wire `Include ~/.postern/ssh.conf` into `~/.ssh/config` (`--check` reports without writing) |
 | `postern mint <device> [--cert-max-lifetime <dur>]` | Force-mint a fresh cert (ad-hoc / scripted) |
 | `postern timefix <device> [--ip <addr>] [--tunnel] [--quiet]` | Repair a device's clock |
 | `postern cache ls` | List cached cert entries |
@@ -242,13 +243,7 @@ postern configure \
 
 …or paste a YAML snippet you publish into `~/.postern/config.yaml` directly. Either way, the result is the same. Operators typically pre-bake one of these forms into onboarding docs so engineers don't have to know the IdP details.
 
-If engineers want vanilla `ssh` / `scp` / VSCode-Remote-SSH to find their devices (the registered-flow payoff covered above), they add one line to `~/.ssh/config`:
-
-```
-Include ~/.postern/ssh.conf
-```
-
-`postern add-host` prints this line on first invocation; `postern add-host --check` reports whether it's wired and exits non-zero if not.
+If engineers want vanilla `ssh` / `scp` / VSCode-Remote-SSH to find their devices (the registered-flow payoff covered above), they run `postern setup-ssh` once, which prepends `Include ~/.postern/ssh.conf` to `~/.ssh/config`. `postern setup-ssh --check` reports whether it's wired and exits non-zero if not.
 
 ## Releases
 

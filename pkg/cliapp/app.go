@@ -84,6 +84,7 @@ func New(options Options) *cobra.Command {
 		tunnelCommand(rt),
 		addHostCommand(rt),
 		removeHostCommand(rt),
+		setupSSHCommand(rt),
 		cacheCommand(rt),
 		timefixCommand(rt),
 		placeholderCommand("upgrade", "Upgrade the CLI from the configured release channel"),

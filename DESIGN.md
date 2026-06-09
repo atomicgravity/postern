@@ -745,7 +745,7 @@ Same no-`--` shape as `postern ssh`: Postern-specific flags before the device id
 
 ### `postern add-host <device-id> [--ip <ip>] [--port N] [--user <name>]` / `postern remove-host <device-id>`
 
-`postern add-host` registers the device's cert paths and target in `~/.postern/ssh.conf` (the Postern-managed ssh-config), so vanilla `ssh <device-id>` (and any tool that honors `~/.ssh/config`) works without invoking the postern binary. The engineer adds a one-time `Include ~/.postern/ssh.conf` line to `~/.ssh/config`; add-host prints the literal line on first invocation and `--check` reports presence with a non-zero exit code if it's missing.
+`postern add-host` registers the device's cert paths and target in `~/.postern/ssh.conf` (the Postern-managed ssh-config), so vanilla `ssh <device-id>` (and any tool that honors `~/.ssh/config`) works without invoking the postern binary. A one-time `postern setup-ssh` prepends the `Include ~/.postern/ssh.conf` line to `~/.ssh/config`; `postern setup-ssh --check` reports presence with a non-zero exit code if it's missing.
 
 `postern remove-host` drops the managed stanza for a device. Both commands preserve engineer-edited content outside the Postern BEGIN/END markers.
 
@@ -783,7 +783,7 @@ There is no `--` separator — postern flags precede the device id, and everythi
 
 #### Tooling integration via `Include`
 
-For repeat access to the same devices, engineers run `postern add-host <device> --ip <ip>` once per device. That writes a stanza into `~/.postern/ssh.conf` mapping the device id (and IP) to the Postern-managed cert + key + user. A one-time `Include ~/.postern/ssh.conf` line in `~/.ssh/config` then makes every ssh-aware tool find the device natively:
+For repeat access to the same devices, engineers run `postern add-host <device> --ip <ip>` once per device. That writes a stanza into `~/.postern/ssh.conf` mapping the device id (and IP) to the Postern-managed cert + key + user. A one-time `postern setup-ssh` prepends the `Include` for `~/.postern/ssh.conf` to `~/.ssh/config`, which then makes every ssh-aware tool find the device natively:
 
 ```
 ssh device-1234                         # vanilla OpenSSH
@@ -792,7 +792,7 @@ rsync device-1234:/data/ ./backup/      # rsync over ssh
 git clone device-1234:/srv/repo.git     # git-over-ssh
 ```
 
-VSCode-Remote-SSH, Cursor, JetBrains Gateway, and any other tool that reads `~/.ssh/config` works the same way — engineers pick the device from the host list and the Postern cert is applied transparently. The Postern CLI never writes to `~/.ssh/config` itself; the include is the engineer's call, with `postern add-host --check` reporting whether it's wired.
+VSCode-Remote-SSH, Cursor, JetBrains Gateway, and any other tool that reads `~/.ssh/config` works the same way — engineers pick the device from the host list and the Postern cert is applied transparently. `postern setup-ssh` is the single explicit, user-invoked command that writes `~/.ssh/config`; the implicit paths (`add-host`, `mint`, `tunnel`) never write it and only report whether the Include is wired (`postern setup-ssh --check`).
 
 ### Mode B: Tunneling backend (`--tunnel`)
 

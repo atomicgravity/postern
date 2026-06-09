@@ -6,28 +6,26 @@
 
 ## Last gate
 
-**Sub-phase:** client-auth/G (strict env decode + predicate edge tests;
-uncommitted working-tree diff on feat/client-auth)
+**Sub-phase:** setup-ssh (new staged `setup-ssh` command + tests, `add-host
+--check` removal, docs; `git diff --cached`, 8 files)
 **Date:** 2026-06-09
 **Test command:** `go clean -testcache && make check` (then `make check` again, cached)
 **Result:** GREEN, reproducible. Both vet passes clean; `-race ./...` all pass;
-tagged timefix-apply pass green. 2nd run identically green, fully cached (19/19
-ok cached) — no flakes, no goleak failures, no order-dependence.
-**Packages passing (19, count stable — G touched only pkg/brokerhandlers +
-internal/idp, both existing):** cmd/timefix-{set-clock,apply(tagged)}, 15×
-internal/*, pkg/{brokerhandlers, cliapp}.
-**New G tests — 1 top-level func + 3 table cases** (authoritative, via
-`git diff`): config_test.go +1 func
-TestLoadResolvedConfigRejectsUnknownKeyPrincipalClassesEnv (strict
-KnownFields(true) rejects typo'd `default` key); oidc_test.go +3 cases in the
-existing TestClassifyEvaluatesPredicateForms table (empty-string/empty-array
-treated absent; present does not match empty-string). config.go = strict
-yaml.NewDecoder + KnownFields(true) for POSTERN_IDP_PRINCIPAL_CLASSES.
+tagged timefix-apply pass green. 2nd run identically green, fully cached — no
+flakes, no goleak failures, no order-dependence.
+**Packages passing (21, count stable — setup-ssh touched only pkg/cliapp for
+Go):** cmd/timefix-{set-clock,apply(tagged)}, 17× internal/*,
+pkg/{brokerhandlers, cliapp}.
+**Net test delta (authoritative, via `git diff --cached`): +5 funcs / -2
+funcs.** Added: setup_ssh_test.go +5 (TestSetupSSH{PrependsInclude,Idempotent,
+CreatesDirAndFile,CheckPresent,CheckAbsent}). Removed: addhost_test.go -2
+(TestAddHostCheckFlag{Present,Absent}, the `add-host --check` path) + 1
+assertion retargeted (Include-line hint → `setup-ssh` hint).
 
 **Warnings triaged:** none.
 
-**Prior gates:** F (2026-06-08) GREEN/reproducible, 19 pkgs, 2 new funcs
-(pkg/brokerhandlers env principal-classes); E 8 funcs; D 8; C 0; B 7; A 13.
+**Prior gates:** client-auth/G (2026-06-09) GREEN, +1 func/+3 cases (strict env
+decode); F (2026-06-08) GREEN, 2 new funcs; E 8; D 8; C 0; B 7; A 13.
 
 ## Integration / target counts
 

@@ -182,8 +182,8 @@ func TestAddHostDetectsIncludeAbsent(t *testing.T) {
 	if !strings.Contains(stdout, "was NOT found") {
 		t.Fatalf("stdout missing absent-message:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Include ~/.postern/ssh.conf") {
-		t.Fatalf("stdout missing literal Include line to add:\n%s", stdout)
+	if !strings.Contains(stdout, "setup-ssh") {
+		t.Fatalf("stdout missing setup-ssh hint:\n%s", stdout)
 	}
 }
 
@@ -383,32 +383,6 @@ func TestAddHostRejectsInvalidDeviceID(t *testing.T) {
 					tc.device, err, tc.wantInErr)
 			}
 		})
-	}
-}
-
-func TestAddHostCheckFlagPresent(t *testing.T) {
-	f := newAddHostFixture(t)
-	f.writeSSHConfig(t, "Include ~/.postern/ssh.conf\n")
-
-	err := execute(context.Background(), f.root(), "add-host", "--check")
-	if err != nil {
-		t.Fatalf("Run(add-host --check) error = %v", err)
-	}
-	if !strings.Contains(f.stdout.String(), "is present") {
-		t.Fatalf("stdout missing present message:\n%s", f.stdout.String())
-	}
-}
-
-func TestAddHostCheckFlagAbsent(t *testing.T) {
-	f := newAddHostFixture(t)
-	f.writeSSHConfig(t, "# empty\n")
-
-	err := execute(context.Background(), f.root(), "add-host", "--check")
-	if err == nil {
-		t.Fatal("Run(add-host --check) returned nil error for absent Include line")
-	}
-	if !strings.Contains(f.stdout.String(), "is NOT present") {
-		t.Fatalf("stdout missing absent message:\n%s", f.stdout.String())
 	}
 }
 
