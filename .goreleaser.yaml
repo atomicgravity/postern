@@ -32,6 +32,11 @@ builds:
       - -X github.com/atomicgravity/postern/internal/version.Date={{ .Date }}
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
+    # Developer ID-sign + notarize the macOS binaries in place before they are
+    # archived. The hook runs per built binary and no-ops for linux/windows.
+    hooks:
+      post:
+        - cmd: ./scripts/sign-macos.sh "{{ .Path }}" "{{ .Os }}"
 
   - id: broker
     main: ./cmd/broker

@@ -67,6 +67,11 @@ jobs:
           go-version: stable
           cache: true
       - uses: sigstore/cosign-installer@v4.1.2
+      # quill Developer ID-signs + notarizes the macOS binaries from Linux
+      # (post-build hook in .goreleaser.yaml). Skips silently when the QUILL_*
+      # secrets are unset, so the release still publishes unsigned.
+      - name: Install quill
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/quill/main/install.sh | sh -s -- -b /usr/local/bin v0.7.1
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -74,3 +79,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QUILL_SIGN_P12: ${{ secrets.QUILL_SIGN_P12 }}
+          QUILL_SIGN_PASSWORD: ${{ secrets.QUILL_SIGN_PASSWORD }}
+          QUILL_NOTARY_KEY: ${{ secrets.QUILL_NOTARY_KEY }}
+          QUILL_NOTARY_KEY_ID: ${{ secrets.QUILL_NOTARY_KEY_ID }}
+          QUILL_NOTARY_ISSUER: ${{ secrets.QUILL_NOTARY_ISSUER }}
