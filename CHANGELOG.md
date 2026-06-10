@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/atomicgravity/postern/compare/v1.4.1...v1.5.0) (2026-06-10)
+
+
+### Features
+
+* **terraform:** apigw_jwt_additional_audiences for client-credentials tokens ([8f26735](https://github.com/atomicgravity/postern/commit/8f26735079bc510e11275329db1ba5a24bada259))
+
 ## [1.4.1](https://github.com/atomicgravity/postern/compare/v1.4.0...v1.4.1) (2026-06-09)
 
 
