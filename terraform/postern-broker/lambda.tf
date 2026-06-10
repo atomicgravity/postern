@@ -148,14 +148,16 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
   authorizer_type  = "JWT"
   identity_sources = ["$request.header.Authorization"]
 
-  # APIGW's JWT authorizer enforces signature + issuer + exp/nbf
-  # unconditionally. Audience is optional — when the audience list is
-  # empty, APIGW skips the aud check entirely. Operators running scope-
-  # only auth (idp_required_scope set, idp_audience empty) still get
-  # signature+issuer pre-filtering at APIGW; the broker enforces scope.
+  # Edge pre-filter: signature + issuer + exp/nbf + audience. The audience
+  # list is idp_audience plus apigw_jwt_additional_audiences. APIGW matches
+  # a token's `aud` claim, or its `client_id` claim when `aud` is absent —
+  # so listing OAuth2 client-credentials client IDs (whose tokens carry a
+  # scope and client_id but no aud) lets their tokens pass the edge. The
+  # broker remains the authoritative verifier (aud-OR-scope, token_use,
+  # iat). An empty list skips the aud check (signature+issuer+exp only).
   jwt_configuration {
     issuer   = var.idp_issuer
-    audience = var.idp_audience != "" ? [var.idp_audience] : []
+    audience = concat(var.idp_audience != "" ? [var.idp_audience] : [], var.apigw_jwt_additional_audiences)
   }
 }
 

@@ -87,7 +87,8 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `lambda_memory_mb`, `lambda_timeout_seconds`, `lambda_log_retention_days`, `audit_log_retention_days` | AWS-side tunables. |
 | `apigw_access_logs_enabled` | `true` by default. APIGW writes a JSON access log line per request to a separate CloudWatch log group. Independent of the JWT authorizer. |
 | `apigw_access_log_retention_days` | `30`. Retention for the APIGW access log group. |
-| `apigw_jwt_authorizer_enabled` | `false` by default. When `true`, API Gateway validates the bearer JWT (signature, issuer, expiration, audience if `idp_audience` is set) before invoking Lambda; bad tokens get a 401 from APIGW without consuming a Lambda invocation. Layered defense — the broker still does its full check (scope, token_use, etc.). See "Layered JWT defense at API Gateway" below. |
+| `apigw_jwt_authorizer_enabled` | `false` by default. When `true`, API Gateway validates the bearer JWT (signature, issuer, expiration, audience) before invoking Lambda; bad tokens get a 401 from APIGW without consuming a Lambda invocation. Layered defense — the broker still does its full check (scope, token_use, etc.). See "Layered JWT defense at API Gateway" below. |
+| `apigw_jwt_additional_audiences` | `[]` by default. Extra entries for the JWT authorizer's audience list, beyond `idp_audience`. List OAuth2 client-credentials client IDs here so their (aud-less) tokens pass the edge — APIGW matches the `client_id` claim when `aud` is absent. Only consulted when `apigw_jwt_authorizer_enabled = true`. |
 | `tunneling_enabled` | `false` by default. When `true`, the module grants the broker Lambda `iot:OpenTunnel` and passes `POSTERN_TUNNELING_IOT_REGION` + `POSTERN_TUNNELING_DEFAULT_MAX_LIFETIME_MINUTES` env vars so `/ssh/tunnel` mints AWS IoT Secure Tunnels for the firewalled-device path. When `false`, the broker returns 501 on `/ssh/tunnel` and carries no `iot:` permission. See "Tunneling (firewalled-device recovery)" below. |
 | `tunneling_iot_region` | Empty by default. AWS region for the broker's IoT secure-tunneling client; empty resolves to the deployment region. Cross-region operators set this explicitly. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_default_max_lifetime_minutes` | `480` (8 hours) by default. Broker fallback TTL when the engineer omits `--max-lifetime`. AWS caps individual tunnels at 720 (12 hours); the module validation enforces the (0, 720] range. Only consulted when `tunneling_enabled = true`. |
@@ -183,8 +184,10 @@ What this protects against:
 - **Lambda billing.** Bad-token probes don't generate Lambda invocations to pay for.
 
 What this does NOT do:
-- **Replace the broker's checks.** Scope, `token_use`, the cert-mint pipeline gates, and AVP authorization all stay broker-side. APIGW does not understand them.
-- **Enforce audience when `idp_audience` is empty.** APIGW will still validate signature, issuer, and expiration in scope-only deployments — but it will not check the `aud` claim (the broker still does, when `idp_required_scope` matches).
+- **Replace the broker's checks.** Scope, `token_use`, the cert-mint pipeline gates, and AVP authorization all stay broker-side. APIGW validates only signature, issuer, expiration, and audience.
+- **Authorize.** The edge audience match is a coarse pre-filter; the broker makes the authoritative aud-OR-scope decision and runs Cedar.
+
+Client-credentials callers: an OAuth2 client-credentials access token carries a scope and a `client_id` but no `aud`. APIGW matches a token's `client_id` claim against the audience list when `aud` is absent, so list those client IDs in `apigw_jwt_additional_audiences` to let their tokens past the edge. The broker then accepts them by scope and authorizes via Cedar. With `idp_audience` empty and no additional audiences, the edge skips the aud check entirely (signature + issuer + exp only).
 
 Routing:
 - Every route — including `/healthz` — is gated by the authorizer when it's on. The Lambda+APIGW deployment doesn't need an unauthenticated `/healthz`: APIGW is HA AWS-managed (no operator probing required) and Lambda's own lifecycle handles function health. The `/healthz` endpoint stays in the broker handler for the long-running `cmd/broker` deployment behind an ALB, where the operator's load-balancer health check configures auth-bypass on its side. Leaving `/healthz` under JWT auth at APIGW shrinks the unauthenticated attack surface here to zero without giving up any operational capability we actually use.

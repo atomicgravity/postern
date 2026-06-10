@@ -42,6 +42,18 @@ subcommand, which is a placeholder (`pkg/cliapp/app.go` `placeholderCommand`).
 **Last code-carrying commit:** `c953f4c` — *feat(broker): configure
 principal-class rules via env (Lambda)*.
 
+**Fix apigw-m2m-audience (2026-06-09):** new `apigw_jwt_additional_audiences`
+(list) on the broker module. The APIGW HTTP API JWT authorizer keeps pinning
+audience, but the list is now `idp_audience` + the extra entries. APIGW matches
+a token's `aud` claim, or its `client_id` claim when `aud` is absent — so
+listing OAuth2 client-credentials client IDs lets their (aud-less) M2M tokens
+pass the edge while the broker still does the authoritative aud-OR-scope check.
+Fixes M2M tokens 401'ing at the edge before the v1.4.1 broker check ran,
+without dropping the edge audience filter. `terraform/postern-broker/lambda.tf`
++ `variables.tf` + README. Sai operator sets
+`apigw_jwt_additional_audiences = var.m2m_allowed_client_ids` after bumping the
+module ref. Needs a release.
+
 **Phase broker-aud-scope: COMPLETE + gated.** Broker verifier now accepts a
 token matching EITHER configured `idp.audience` OR `idp.required_scope` (was AND);
 fail-closed `matched*` form (a fail-open draft was caught + corrected in review);
