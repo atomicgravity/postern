@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/atomicgravity/postern/compare/v1.5.0...v1.6.0) (2026-07-20)
+
+
+### Features
+
+* **cli:** idp.auth_params — extra authorization-URL query params ([68fe922](https://github.com/atomicgravity/postern/commit/68fe922a5f7192b15d6b3c137d241b13e2b11c0e))
+
+
+### Documentation
+
+* record the APIGW edge audience-pin invariant; clear phase scaffolding ([6ed7d86](https://github.com/atomicgravity/postern/commit/6ed7d8607118c0df912c387ab628ded6446dd38f))
+
 ## [1.5.0](https://github.com/atomicgravity/postern/compare/v1.4.1...v1.5.0) (2026-06-10)
 
 
