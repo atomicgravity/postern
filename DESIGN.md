@@ -1,6 +1,6 @@
 # Postern: SSH access framework for embedded device fleets
 
-> **Status:** design document. Initial proposal for the implementation.
+> **Status:** living design document for the shipped implementation. Design changes land here first, as PRs against this doc.
 
 ## Why Postern exists
 
@@ -1168,8 +1168,7 @@ What wrapping does **not** cover: reimplementation of broker pipeline internals 
 
 ## Open questions
 
-- **Initial public-launch readiness work.** README, CONTRIBUTING, SECURITY, CI templates, blog post outlining the design. Bundle into the v1 release.
+- **Remaining launch-readiness work.** A SECURITY policy doc and a blog post outlining the design.
 - **Maintainer designation.** Single named maintainer with weekly issue-triage commitment for the first 12 months minimum.
-- **Validation step.** Optional but recommended: publish the design doc / blog post for community signal before locking in v1 architecture. Cheap de-risk on the OSS-stewardship investment.
-- **Second concrete implementation of any abstraction.** None at v1. Adding (e.g., Vault-backed Signer, generic OIDC IdP, ngrok-based Tunneling) becomes plausible once a real downstream user requests one. Until then, premature.
+- **Second concrete implementations.** Registry aside (DynamoDB and HTTP concretes both ship), each abstraction has exactly one concrete. Adding more (e.g., Vault-backed Signer, ngrok-based Tunneling) becomes plausible once a real downstream user requests one. Until then, premature.
 - **Session recording adapter.** Designed-in path via `ForceCommand` shell wrapper, but no shipped implementation in v1. Add when a real compliance need lands.
