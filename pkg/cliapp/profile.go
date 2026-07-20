@@ -70,19 +70,18 @@ type Profile struct {
 // browserless service-account flow. The client secret for the
 // client-credentials flow is never read from this struct (or the config
 // file) — it is sourced from <PREFIX>_IDP_CLIENT_SECRET at use time.
+//
+// AuthParams are extra query parameters sent only on the authorize URL of the
+// browser PKCE flow (e.g. Cognito idp_identifier); keys the flow controls are
+// rejected by Validate.
 type IDPConfig struct {
-	Issuer        string `yaml:"issuer"`
-	ClientID      string `yaml:"client_id"`
-	Audience      string `yaml:"audience,omitempty"`
-	AudienceParam string `yaml:"audience_param,omitempty"`
-	Scopes        string `yaml:"scopes,omitempty"`
-	Grant         string `yaml:"grant,omitempty"`
-	// AuthParams are extra query parameters appended to the OAuth authorize
-	// URL only (browser PKCE flow). Keys colliding with a parameter the flow
-	// controls are rejected by Validate. Never sent on token exchange,
-	// refresh, or the client-credentials grant. Example: Cognito
-	// idp_identifier to skip the enterprise email-first IdP-selection step.
-	AuthParams map[string]string `yaml:"auth_params,omitempty"`
+	Issuer        string            `yaml:"issuer"`
+	ClientID      string            `yaml:"client_id"`
+	Audience      string            `yaml:"audience,omitempty"`
+	AudienceParam string            `yaml:"audience_param,omitempty"`
+	Scopes        string            `yaml:"scopes,omitempty"`
+	Grant         string            `yaml:"grant,omitempty"`
+	AuthParams    map[string]string `yaml:"auth_params,omitempty"`
 }
 
 // usesClientCredentials reports whether the profile selects the
@@ -232,10 +231,7 @@ func (p Profile) Validate() error {
 	default:
 		errs = append(errs, ErrIDPUnknownGrant)
 	}
-	// Reserved-param collisions are rejected here (config validation) using the
-	// same set oauthlogin enforces on its Options — a single source of truth so
-	// the two views can't drift. Runs after WithDefaults, so AudienceParam holds
-	// the effective value (default "resource" or the configured override).
+	// Runs after WithDefaults, so AudienceParam holds its effective value.
 	if err := oauthlogin.ValidateAuthParams(p.IDP.AuthParams, p.IDP.AudienceParam); err != nil {
 		errs = append(errs, err)
 	}

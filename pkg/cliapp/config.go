@@ -77,9 +77,7 @@ func trimProfile(profile Profile) Profile {
 	return profile
 }
 
-// trimAuthParams trims each key and value and drops empty-key entries so the
-// decode boundary hands validation and URL construction a canonical map. A nil
-// or empty map is returned unchanged (no key emitted, omitempty preserved).
+// trimAuthParams trims keys and values and drops empty-key entries.
 func trimAuthParams(params map[string]string) map[string]string {
 	if len(params) == 0 {
 		return params

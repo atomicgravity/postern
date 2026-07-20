@@ -78,10 +78,7 @@ type Options struct {
 	Audience      string
 	AudienceParam string
 	Scopes        string
-	// AuthParams are extra query parameters appended to the authorization
-	// URL only (never token exchange, refresh, or client-credentials). Keys
-	// colliding with a parameter the flow sets itself are rejected — see
-	// ValidateAuthParams. Typical use: Cognito idp_identifier, login_hint.
+	// AuthParams are extra query parameters for the authorize URL only.
 	AuthParams    map[string]string
 	Store         TokenSaver
 	HTTPClient    *http.Client
@@ -149,10 +146,7 @@ func Login(ctx context.Context, options Options) (Result, error) {
 	if options.Audience != "" {
 		authOpts = append(authOpts, oauth2.SetAuthURLParam(options.AudienceParam, options.Audience))
 	}
-	// Extra operator-configured query params ride on the authorize URL only.
-	// They are deliberately absent from exchangeOpts below (and from the
-	// refresh and client-credentials paths, which never receive them) — the
-	// audience pair is the only param that also belongs on token exchange.
+	// auth_params ride on the authorize URL only, never token exchange.
 	for key, value := range options.AuthParams {
 		authOpts = append(authOpts, oauth2.SetAuthURLParam(key, value))
 	}
@@ -301,7 +295,6 @@ func normalizeOptions(options Options) Options {
 	options.Audience = strings.TrimSpace(options.Audience)
 	options.AudienceParam = strings.TrimSpace(options.AudienceParam)
 	options.Scopes = strings.TrimSpace(options.Scopes)
-	options.AuthParams = normalizeAuthParams(options.AuthParams)
 	if options.HTTPClient == nil {
 		options.HTTPClient = http.DefaultClient
 	}
@@ -343,13 +336,8 @@ func validateOptions(options Options) error {
 	return errors.Join(errs...)
 }
 
-// reservedAuthParams are the authorize-URL query parameters the OAuth flow
-// sets itself: AuthCodeURL contributes response_type/client_id/redirect_uri/
-// scope/state, S256ChallengeOption contributes the code_challenge pair, and
-// AccessTypeOffline contributes access_type. SetAuthURLParam is url.Values.Set
-// (overwrite), so an auth_param reusing one of these names would silently
-// corrupt PKCE, state, offline access, or the flow itself. The effective
-// audience_param is per-profile, so ValidateAuthParams reserves it separately.
+// reservedAuthParams are the authorize-URL params the OAuth flow sets itself;
+// auth_params may not override them.
 var reservedAuthParams = map[string]struct{}{
 	"client_id":             {},
 	"redirect_uri":          {},
@@ -361,13 +349,9 @@ var reservedAuthParams = map[string]struct{}{
 	"access_type":           {},
 }
 
-// ValidateAuthParams rejects auth_params whose keys collide with a parameter
-// the authorization flow controls — the eight fixed reserved keys plus the
-// effective audienceParam (resource/audience). An empty audienceParam skips
-// only that entry (a scope-only profile emits no audience param to protect);
-// the fixed keys are always enforced. Returns ErrOAuthLoginReservedAuthParam
-// naming the offending key. Exported so the CLI config layer can reject the
-// same collisions at profile validation without duplicating the reserved set.
+// ValidateAuthParams rejects auth_params that reuse a reserved authorize-URL
+// parameter (the fixed set, plus a non-empty audienceParam). Exported so the
+// CLI config layer shares one reserved set.
 func ValidateAuthParams(params map[string]string, audienceParam string) error {
 	audienceParam = strings.TrimSpace(audienceParam)
 	for key := range params {
@@ -380,25 +364,6 @@ func ValidateAuthParams(params map[string]string, audienceParam string) error {
 		}
 	}
 	return nil
-}
-
-// normalizeAuthParams trims each key and value and drops empty-key entries. A
-// nil or empty map is returned unchanged so the authorize URL stays
-// byte-identical when no auth_params are configured. Empty values are kept
-// (a valueless flag param is legitimate).
-func normalizeAuthParams(params map[string]string) map[string]string {
-	if len(params) == 0 {
-		return params
-	}
-	normalized := make(map[string]string, len(params))
-	for key, value := range params {
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		normalized[key] = strings.TrimSpace(value)
-	}
-	return normalized
 }
 
 func listenForCallback(ports []int) (net.Listener, string, int, error) {
