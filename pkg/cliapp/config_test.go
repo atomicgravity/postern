@@ -642,6 +642,45 @@ default:
 	assertAuthParams(t, resolved.Profile.IDP.AuthParams, map[string]string{"idp_identifier": "file-domain.com"})
 }
 
+// TestResolveProfileAuthParamsEnvZeroPairErrorsNotClears guards the boundary
+// where a non-blank POSTERN_IDP_AUTH_PARAMS parses to zero pairs (only
+// commas/whitespace): it must be a hard error naming the variable, never a
+// silent clear of a file-configured map. This is the garbage half of the
+// explicitly-empty contract; the blank/whitespace half (which preserves the
+// file map) is TestResolveProfileAuthParamsEnvBlankKeepsFileMap.
+func TestResolveProfileAuthParamsEnvZeroPairErrorsNotClears(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+    auth_params:
+      idp_identifier: file-domain.com
+`)
+
+	for name, envVal := range map[string]string{
+		"commas_only":       ",,,",
+		"commas_and_spaces": " , , ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+				EnvName(DefaultEnvPrefix, idpAuthParamsEnvSuffix): envVal,
+			})})
+			if err == nil {
+				t.Fatalf("ResolveProfile() error = nil for %q, want hard error (must not silently clear the file map)", envVal)
+			}
+			if !strings.Contains(err.Error(), "IDP_AUTH_PARAMS") {
+				t.Fatalf("ResolveProfile() error = %v, want it to name IDP_AUTH_PARAMS", err)
+			}
+			if !strings.Contains(err.Error(), "no key=value pairs") {
+				t.Fatalf("ResolveProfile() error = %v, want it to explain zero pairs", err)
+			}
+		})
+	}
+}
+
 // TestResolveProfileAuthParamsEnvMalformed proves a malformed override fails
 // fast at profile resolution with an error naming the env var — a typo must
 // not silently no-op.

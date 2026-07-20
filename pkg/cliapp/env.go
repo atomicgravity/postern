@@ -72,13 +72,20 @@ func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string)
 // authParamsFromEnv parses a <PREFIX>_IDP_AUTH_PARAMS override of the form
 // "k=v,k=v". Pairs are comma-separated; each pair splits on its first '=' so
 // values may contain '='. Keys and values are whitespace-trimmed. Empty (or
-// whitespace-only) comma segments are skipped, which tolerates a trailing
-// comma. A blank/unset env var returns ok=false, leaving any file-configured
-// map intact; a non-blank value replaces the file map wholesale (per-field
-// override semantics, matching the scalar fields and the broker's whole-block
-// principal_classes override). A segment with no '=' or an empty key is a hard
-// error — a typo like "idp_identifier" (missing "=value") must not silently
-// no-op and send the engineer to the wrong IdP screen.
+// whitespace-only) comma segments are skipped, which tolerates a leading or
+// trailing comma as long as at least one real pair remains.
+//
+// Explicit-empty contract: a blank or whitespace-only value (and an unset var)
+// returns ok=false, leaving any file-configured map intact — that is the only
+// way to "not override". A non-blank value replaces the file map wholesale
+// (per-field override semantics, matching the scalar fields and the broker's
+// whole-block principal_classes override). Every malformed input is a hard
+// error, never a silent no-op: a segment with no '=' or an empty key (a typo
+// like "idp_identifier" missing "=value"), and — critically — a non-blank
+// value that yields zero pairs (e.g. ",,,"). There is deliberately no env
+// syntax to clear a file-configured map: that path parsed to nothing and would
+// otherwise silently blank the map, so it errors and the operator edits the
+// config file instead.
 func authParamsFromEnv(name string, lookupEnv func(string) (string, bool)) (map[string]string, bool, error) {
 	raw, ok := lookupEnv(name)
 	if !ok {
@@ -102,6 +109,10 @@ func authParamsFromEnv(name string, lookupEnv func(string) (string, bool)) (map[
 			return nil, false, fmt.Errorf("%s: entry %q has an empty key", name, segment)
 		}
 		params[key] = strings.TrimSpace(value)
+	}
+
+	if len(params) == 0 {
+		return nil, false, fmt.Errorf("%s is set to %q but contains no key=value pairs; unset or blank it to keep the config-file value", name, raw)
 	}
 
 	return params, true, nil
