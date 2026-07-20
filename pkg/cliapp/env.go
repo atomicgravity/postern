@@ -70,22 +70,15 @@ func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string)
 }
 
 // authParamsFromEnv parses a <PREFIX>_IDP_AUTH_PARAMS override of the form
-// "k=v,k=v". Pairs are comma-separated; each pair splits on its first '=' so
-// values may contain '='. Keys and values are whitespace-trimmed. Empty (or
-// whitespace-only) comma segments are skipped, which tolerates a leading or
-// trailing comma as long as at least one real pair remains.
+// "k=v,k=v". Each comma-separated pair splits on its first '=' (values may
+// contain '='); keys and values are whitespace-trimmed; empty segments from
+// a stray leading or trailing comma are skipped.
 //
-// Explicit-empty contract: a blank or whitespace-only value (and an unset var)
-// returns ok=false, leaving any file-configured map intact — that is the only
-// way to "not override". A non-blank value replaces the file map wholesale
-// (per-field override semantics, matching the scalar fields and the broker's
-// whole-block principal_classes override). Every malformed input is a hard
-// error, never a silent no-op: a segment with no '=' or an empty key (a typo
-// like "idp_identifier" missing "=value"), and — critically — a non-blank
-// value that yields zero pairs (e.g. ",,,"). There is deliberately no env
-// syntax to clear a file-configured map: that path parsed to nothing and would
-// otherwise silently blank the map, so it errors and the operator edits the
-// config file instead.
+// Unset, empty, or whitespace-only: no override — the file-configured map
+// stands. Any other value replaces the file map entirely. A value with a
+// malformed pair (no '=', or an empty key) or one that trims down to no
+// pairs at all (",,,") is an error: env input never silently clears the
+// map. To remove auth_params, edit the config file.
 func authParamsFromEnv(name string, lookupEnv func(string) (string, bool)) (map[string]string, bool, error) {
 	raw, ok := lookupEnv(name)
 	if !ok {
