@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/atomicgravity/postern/internal/broker"
+	"github.com/atomicgravity/postern/internal/oauthlogin"
 	"github.com/spf13/cobra"
 )
 
@@ -76,6 +77,12 @@ type IDPConfig struct {
 	AudienceParam string `yaml:"audience_param,omitempty"`
 	Scopes        string `yaml:"scopes,omitempty"`
 	Grant         string `yaml:"grant,omitempty"`
+	// AuthParams are extra query parameters appended to the OAuth authorize
+	// URL only (browser PKCE flow). Keys colliding with a parameter the flow
+	// controls are rejected by Validate. Never sent on token exchange,
+	// refresh, or the client-credentials grant. Example: Cognito
+	// idp_identifier to skip the enterprise email-first IdP-selection step.
+	AuthParams map[string]string `yaml:"auth_params,omitempty"`
 }
 
 // usesClientCredentials reports whether the profile selects the
@@ -165,7 +172,11 @@ func (c Config) ResolveProfile(options ResolveProfileOptions) (ResolvedProfile, 
 		return ResolvedProfile{}, fmt.Errorf("profile %q not found (available: %s)", profileName, strings.Join(c.ProfileNames(), ", "))
 	}
 
-	profile = applyEnvOverrides(profile, envPrefix, lookupEnv).WithDefaults()
+	profile, err := applyEnvOverrides(profile, envPrefix, lookupEnv)
+	if err != nil {
+		return ResolvedProfile{}, fmt.Errorf("profile %q: %w", profileName, err)
+	}
+	profile = profile.WithDefaults()
 	if err := profile.Validate(); err != nil {
 		return ResolvedProfile{}, fmt.Errorf("profile %q: %w", profileName, err)
 	}
@@ -220,6 +231,13 @@ func (p Profile) Validate() error {
 	case "", GrantAuthorizationCode, GrantClientCredentials:
 	default:
 		errs = append(errs, ErrIDPUnknownGrant)
+	}
+	// Reserved-param collisions are rejected here (config validation) using the
+	// same set oauthlogin enforces on its Options — a single source of truth so
+	// the two views can't drift. Runs after WithDefaults, so AudienceParam holds
+	// the effective value (default "resource" or the configured override).
+	if err := oauthlogin.ValidateAuthParams(p.IDP.AuthParams, p.IDP.AudienceParam); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

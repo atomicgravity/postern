@@ -988,6 +988,12 @@ default:
     # Set to "audience" for Auth0 and Okta authorization servers using their
     # custom audience= parameter.
     audience_param: resource
+    # Extra query parameters appended to the OAuth authorize request only
+    # (never token exchange, refresh, or the client-credentials grant). Use
+    # for provider-specific hints — here Cognito's idp_identifier, which
+    # skips the enterprise email-first IdP-selection screen for this domain.
+    auth_params:
+      idp_identifier: acme.com
 staging:
   broker: https://postern-staging.acme.com
   idp:
@@ -1009,9 +1015,11 @@ The `audience_param` value is also used by the CLI on token-refresh calls (Auth0
 
 If the CLI profile only sets `idp.scopes` (no `audience`), the CLI omits the resource/audience parameter from /authorize entirely. Operators using scope-only validation at the broker (no `idp.audience` configured there) work this way — pure scope-based gating, no audience binding. Mixing is fine: setting both yields a token that satisfies both checks.
 
+The optional `idp.auth_params` map appends arbitrary extra query parameters to the OAuth authorize request only — not token exchange, not refresh, not the client-credentials grant. It generalizes provider-specific hints: Cognito's `idp_identifier` (skip the enterprise email-first IdP-selection step), `login_hint`, an Okta `idp` id. Keys naming a parameter the flow controls itself — `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`, `access_type`, and the effective `audience_param` — are rejected at config validation so an entry cannot silently overwrite PKCE, the state value, or the audience binding.
+
 Profile selection: `--profile=name` flag, or `POSTERN_PROFILE` env var, defaulting to the `default` profile (`default` is convention, not a magic key — it's just the name the CLI uses when none is supplied). If a named profile doesn't exist, the CLI errors with the list of available profiles.
 
-Per-field env overrides apply to the resolved profile. Env-var names derive mechanically from the YAML path — uppercased, joined with underscores, prefixed `POSTERN_`: `idp.issuer` → `POSTERN_IDP_ISSUER`, `broker` → `POSTERN_BROKER`. Scalar fields only; v1 has no list-typed config fields (scopes is a single space-separated string, OAuth-natural).
+Per-field env overrides apply to the resolved profile. Env-var names derive mechanically from the YAML path — uppercased, joined with underscores, prefixed `POSTERN_`: `idp.issuer` → `POSTERN_IDP_ISSUER`, `broker` → `POSTERN_BROKER`. Fields are scalar except `idp.auth_params`, which is a string map: its `POSTERN_IDP_AUTH_PARAMS` override takes a comma-separated `key=value,key=value` list (each pair splits on its first `=`, so a value may contain `=` but not `,` — configure comma-bearing values in the YAML file) and replaces the file map wholesale. `idp.scopes` stays a single space-separated string (OAuth-natural), not a list.
 
 Override precedence: command-line flag > env var > config file profile > Postern defaults.
 

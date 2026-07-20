@@ -1,11 +1,15 @@
 package cliapp
 
 import (
+	"bytes"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/atomicgravity/postern/internal/oauthlogin"
 )
 
 func TestLoadConfigParsesProfiles(t *testing.T) {
@@ -523,6 +527,203 @@ func TestProfileValidateGrant(t *testing.T) {
 	}
 }
 
+// TestLoadConfigParsesAuthParams locks the YAML wire path for auth_params: the
+// map must survive LoadConfig and be whitespace-trimmed by trimProfile. If the
+// yaml tag or the trimAuthParams line is dropped, operator-configured
+// authorize-URL params silently vanish.
+func TestLoadConfigParsesAuthParams(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+    auth_params:
+      idp_identifier: "  mydomain.com  "
+      login_hint: engineer@mydomain.com
+`)
+
+	want := map[string]string{"idp_identifier": "mydomain.com", "login_hint": "engineer@mydomain.com"}
+	assertAuthParams(t, config.Profiles["default"].IDP.AuthParams, want)
+}
+
+// TestSaveConfigOmitsEmptyAuthParams proves the omitempty tag keeps an absent
+// map out of the serialized YAML, so existing configs don't grow a spurious
+// auth_params line on rewrite.
+func TestSaveConfigOmitsEmptyAuthParams(t *testing.T) {
+	var buf bytes.Buffer
+	err := SaveConfig(&buf, Config{Profiles: map[string]Profile{
+		"default": {
+			Broker: "https://postern.example.com",
+			IDP: IDPConfig{
+				Issuer:   "https://idp.example.com",
+				ClientID: "client-123",
+				Audience: "https://postern.example.com",
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if strings.Contains(buf.String(), "auth_params") {
+		t.Fatalf("serialized config contains auth_params when none was set:\n%s", buf.String())
+	}
+}
+
+// TestResolveProfileParsesAuthParamsEnv covers the POSTERN_IDP_AUTH_PARAMS
+// k=v,k=v override: keys/values are trimmed, and each pair splits on its first
+// '=' so a value may itself contain '='.
+func TestResolveProfileParsesAuthParamsEnv(t *testing.T) {
+	config := authParamsBaseConfig(t)
+
+	resolved, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+		EnvName(DefaultEnvPrefix, idpAuthParamsEnvSuffix): "idp_identifier=mydomain.com, login_hint = a@b.com ,token=x=y=z",
+	})})
+	if err != nil {
+		t.Fatalf("ResolveProfile() error = %v", err)
+	}
+
+	want := map[string]string{
+		"idp_identifier": "mydomain.com",
+		"login_hint":     "a@b.com",
+		"token":          "x=y=z",
+	}
+	assertAuthParams(t, resolved.Profile.IDP.AuthParams, want)
+}
+
+// TestResolveProfileAuthParamsEnvReplacesFileMap confirms the per-field
+// override replaces the file map wholesale (no per-key merge): the file's
+// "extra" key is gone once the env var is set.
+func TestResolveProfileAuthParamsEnvReplacesFileMap(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+    auth_params:
+      idp_identifier: file-domain.com
+      extra: keep-me
+`)
+
+	resolved, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+		EnvName(DefaultEnvPrefix, idpAuthParamsEnvSuffix): "idp_identifier=env-domain.com",
+	})})
+	if err != nil {
+		t.Fatalf("ResolveProfile() error = %v", err)
+	}
+
+	assertAuthParams(t, resolved.Profile.IDP.AuthParams, map[string]string{"idp_identifier": "env-domain.com"})
+}
+
+// TestResolveProfileAuthParamsEnvBlankKeepsFileMap confirms a blank/whitespace
+// env value is treated as unset, leaving the file-configured map intact.
+func TestResolveProfileAuthParamsEnvBlankKeepsFileMap(t *testing.T) {
+	config := loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+    auth_params:
+      idp_identifier: file-domain.com
+`)
+
+	resolved, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+		EnvName(DefaultEnvPrefix, idpAuthParamsEnvSuffix): "   ",
+	})})
+	if err != nil {
+		t.Fatalf("ResolveProfile() error = %v", err)
+	}
+
+	assertAuthParams(t, resolved.Profile.IDP.AuthParams, map[string]string{"idp_identifier": "file-domain.com"})
+}
+
+// TestResolveProfileAuthParamsEnvMalformed proves a malformed override fails
+// fast at profile resolution with an error naming the env var — a typo must
+// not silently no-op.
+func TestResolveProfileAuthParamsEnvMalformed(t *testing.T) {
+	config := authParamsBaseConfig(t)
+
+	cases := map[string]string{
+		"no_equals": "idp_identifier",
+		"empty_key": "=mydomain.com",
+		"mixed_bad": "idp_identifier=ok,broken",
+	}
+	for name, envVal := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.ResolveProfile(ResolveProfileOptions{LookupEnv: mapEnv(map[string]string{
+				EnvName(DefaultEnvPrefix, idpAuthParamsEnvSuffix): envVal,
+			})})
+			if err == nil {
+				t.Fatalf("ResolveProfile() error = nil, want malformed-env error for %q", envVal)
+			}
+			if !strings.Contains(err.Error(), "IDP_AUTH_PARAMS") {
+				t.Fatalf("ResolveProfile() error = %v, want it to name IDP_AUTH_PARAMS", err)
+			}
+		})
+	}
+}
+
+// TestProfileValidateRejectsReservedAuthParams is the AC #6 gate: a reserved
+// authorize-URL parameter in auth_params is rejected at config validation with
+// the shared oauthlogin sentinel — for each of the eight fixed keys and for the
+// effective audience_param (both the default "resource" and an explicit
+// override). A non-reserved param passes.
+func TestProfileValidateRejectsReservedAuthParams(t *testing.T) {
+	base := func() Profile {
+		return Profile{
+			Broker: "https://postern.example.com",
+			IDP: IDPConfig{
+				Issuer:   "https://idp.example.com",
+				ClientID: "client-123",
+				Audience: "https://postern.example.com",
+			},
+		}.WithDefaults()
+	}
+
+	fixed := []string{
+		"client_id", "redirect_uri", "response_type", "scope", "state",
+		"code_challenge", "code_challenge_method", "access_type",
+	}
+	for _, key := range fixed {
+		p := base()
+		p.IDP.AuthParams = map[string]string{key: "x"}
+		if err := p.Validate(); !errors.Is(err, oauthlogin.ErrOAuthLoginReservedAuthParam) {
+			t.Fatalf("Validate() auth_params[%q] error = %v, want ErrOAuthLoginReservedAuthParam", key, err)
+		}
+	}
+
+	pDefault := base()
+	pDefault.IDP.AuthParams = map[string]string{DefaultAudienceParam: "x"}
+	if err := pDefault.Validate(); !errors.Is(err, oauthlogin.ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("Validate() auth_params[%s] error = %v, want reserved (default audience_param)", DefaultAudienceParam, err)
+	}
+
+	pExplicit := Profile{
+		Broker: "https://postern.example.com",
+		IDP: IDPConfig{
+			Issuer:        "https://idp.example.com",
+			ClientID:      "client-123",
+			Audience:      "https://postern.example.com",
+			AudienceParam: "audience",
+			AuthParams:    map[string]string{"audience": "x"},
+		},
+	}.WithDefaults()
+	if err := pExplicit.Validate(); !errors.Is(err, oauthlogin.ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("Validate() auth_params[audience] with audience_param=audience error = %v, want reserved", err)
+	}
+
+	pOK := base()
+	pOK.IDP.AuthParams = map[string]string{"idp_identifier": "mydomain.com"}
+	if err := pOK.Validate(); err != nil {
+		t.Fatalf("Validate() auth_params[idp_identifier] error = %v, want nil", err)
+	}
+}
+
 func TestDefaultConfigPathUsesBinaryName(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -562,4 +763,23 @@ func assertEqual(t *testing.T, got string, want string, label string) {
 	if got != want {
 		t.Fatalf("%s = %q, want %q", label, got, want)
 	}
+}
+
+func assertAuthParams(t *testing.T, got, want map[string]string) {
+	t.Helper()
+	if !maps.Equal(got, want) {
+		t.Fatalf("auth_params = %v, want %v", got, want)
+	}
+}
+
+func authParamsBaseConfig(t *testing.T) Config {
+	t.Helper()
+	return loadConfigForTest(t, `
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://idp.example.com
+    client_id: client-123
+    audience: https://postern.example.com
+`)
 }

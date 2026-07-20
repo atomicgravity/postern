@@ -109,6 +109,7 @@ func defaultLoginRunner(binaryName string, envPrefix string, lookupEnv func(stri
 			Audience:      profile.Profile.IDP.Audience,
 			AudienceParam: profile.Profile.IDP.AudienceParam,
 			Scopes:        profile.Profile.IDP.Scopes,
+			AuthParams:    profile.Profile.IDP.AuthParams,
 			Store:         store,
 			CallbackPorts: callbackPorts,
 			NoBrowser:     opts.NoBrowser,

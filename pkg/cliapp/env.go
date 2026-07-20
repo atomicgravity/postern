@@ -1,6 +1,7 @@
 package cliapp
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ const (
 	idpClientIDEnvSuffix      = "IDP_CLIENT_ID"
 	idpAudienceEnvSuffix      = "IDP_AUDIENCE"
 	idpAudienceParamEnvSuffix = "IDP_AUDIENCE_PARAM"
+	idpAuthParamsEnvSuffix    = "IDP_AUTH_PARAMS"
 	idpScopesEnvSuffix        = "IDP_SCOPES"
 	idpClientSecretEnvSuffix  = "IDP_CLIENT_SECRET"
 	defaultSSHUserEnvSuffix   = "DEFAULT_SSH_USER"
@@ -48,7 +50,7 @@ func EnvName(prefix string, suffix string) string {
 	return prefix + "_" + suffix
 }
 
-func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string) (string, bool)) Profile {
+func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string) (string, bool)) (Profile, error) {
 	setStringFromEnv(&profile.Broker, EnvName(envPrefix, brokerEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.Issuer, EnvName(envPrefix, idpIssuerEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.ClientID, EnvName(envPrefix, idpClientIDEnvSuffix), lookupEnv)
@@ -56,7 +58,53 @@ func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string)
 	setStringFromEnv(&profile.IDP.AudienceParam, EnvName(envPrefix, idpAudienceParamEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.Scopes, EnvName(envPrefix, idpScopesEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.DefaultSSHUser, EnvName(envPrefix, defaultSSHUserEnvSuffix), lookupEnv)
-	return profile
+
+	authParamsEnv := EnvName(envPrefix, idpAuthParamsEnvSuffix)
+	if params, ok, err := authParamsFromEnv(authParamsEnv, lookupEnv); err != nil {
+		return profile, err
+	} else if ok {
+		profile.IDP.AuthParams = params
+	}
+
+	return profile, nil
+}
+
+// authParamsFromEnv parses a <PREFIX>_IDP_AUTH_PARAMS override of the form
+// "k=v,k=v". Pairs are comma-separated; each pair splits on its first '=' so
+// values may contain '='. Keys and values are whitespace-trimmed. Empty (or
+// whitespace-only) comma segments are skipped, which tolerates a trailing
+// comma. A blank/unset env var returns ok=false, leaving any file-configured
+// map intact; a non-blank value replaces the file map wholesale (per-field
+// override semantics, matching the scalar fields and the broker's whole-block
+// principal_classes override). A segment with no '=' or an empty key is a hard
+// error — a typo like "idp_identifier" (missing "=value") must not silently
+// no-op and send the engineer to the wrong IdP screen.
+func authParamsFromEnv(name string, lookupEnv func(string) (string, bool)) (map[string]string, bool, error) {
+	raw, ok := lookupEnv(name)
+	if !ok {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+
+	params := make(map[string]string)
+	for _, segment := range strings.Split(raw, ",") {
+		if strings.TrimSpace(segment) == "" {
+			continue
+		}
+		key, value, found := strings.Cut(segment, "=")
+		if !found {
+			return nil, false, fmt.Errorf("%s: malformed entry %q (expected key=value)", name, segment)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, false, fmt.Errorf("%s: entry %q has an empty key", name, segment)
+		}
+		params[key] = strings.TrimSpace(value)
+	}
+
+	return params, true, nil
 }
 
 func setStringFromEnv(target *string, name string, lookupEnv func(string) (string, bool)) {

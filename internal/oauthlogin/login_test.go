@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -91,6 +92,218 @@ func TestLoginCompletesAuthorizationCodeFlow(t *testing.T) {
 	}
 	if got, want := idp.tokenForm.Get("resource"), "https://broker.example.com"; got != want {
 		t.Fatalf("token resource = %q, want %q", got, want)
+	}
+}
+
+// TestLoginAuthorizeURLUnchangedWithoutAuthParams locks AC #1's
+// byte-identical-when-absent guarantee: a nil AuthParams map adds no query
+// parameter, so the authorize request carries exactly the flow's own keys and
+// nothing else, and each deterministic key keeps its expected value (a values
+// regression such as scope mangling would slip past a key-set check alone).
+// state and code_challenge are intrinsically random per call, so they are
+// asserted present-and-nonempty rather than by value.
+func TestLoginAuthorizeURLUnchangedWithoutAuthParams(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+
+	_, err := Login(context.Background(), Options{
+		ProfileName:   "staging",
+		Issuer:        idp.URL(),
+		ClientID:      "client-123",
+		Audience:      "https://broker.example.com",
+		AudienceParam: "resource",
+		Scopes:        "postern/cli-access",
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   idp.OpenBrowser,
+		CallbackPorts: []int{0},
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	q := idp.authorizeQuery
+	wantKeys := map[string]struct{}{
+		"response_type": {}, "client_id": {}, "redirect_uri": {},
+		"scope": {}, "state": {}, "code_challenge": {},
+		"code_challenge_method": {}, "access_type": {}, "resource": {},
+	}
+	for key := range q {
+		if _, ok := wantKeys[key]; !ok {
+			t.Fatalf("unexpected authorize param %q (absent auth_params must add nothing); query: %v", key, q)
+		}
+	}
+	for key := range wantKeys {
+		if _, ok := q[key]; !ok {
+			t.Fatalf("authorize query missing expected param %q; query: %v", key, q)
+		}
+	}
+
+	assertQueryValue(t, q, "response_type", "code")
+	assertQueryValue(t, q, "client_id", "client-123")
+	assertQueryValue(t, q, "scope", "openid email profile postern/cli-access")
+	assertQueryValue(t, q, "access_type", "offline")
+	assertQueryValue(t, q, "resource", "https://broker.example.com")
+	if redirect := q.Get("redirect_uri"); !strings.HasPrefix(redirect, "http://127.0.0.1:") || !strings.HasSuffix(redirect, "/cb") {
+		t.Fatalf("redirect_uri = %q, want loopback http://127.0.0.1:<port>/cb", redirect)
+	}
+	if q.Get("state") == "" || q.Get("code_challenge") == "" {
+		t.Fatalf("state/code_challenge must be present: state=%q code_challenge=%q", q.Get("state"), q.Get("code_challenge"))
+	}
+}
+
+// TestLoginAuthParamKeysSortedForDeterminism guards Decision 1's
+// reproducibility claim: Go map iteration over AuthParams is random, but
+// oauth2.AuthCodeURL funnels every param through url.Values.Encode, which sorts
+// by key. The produced authorize query's keys must therefore appear in
+// ascending order regardless of map-iteration order, making the URL byte-stable
+// across runs.
+func TestLoginAuthParamKeysSortedForDeterminism(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+
+	_, err := Login(context.Background(), Options{
+		ProfileName: "staging",
+		Issuer:      idp.URL(),
+		ClientID:    "client-123",
+		Scopes:      "postern/cli-access",
+		AuthParams: map[string]string{
+			"zeta_param":     "z",
+			"idp_identifier": "mydomain.com",
+			"alpha_param":    "a",
+			"login_hint":     "engineer@mydomain.com",
+		},
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   idp.OpenBrowser,
+		CallbackPorts: []int{0},
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+
+	var keys []string
+	for _, pair := range strings.Split(idp.authorizeRawQuery, "&") {
+		key, _, _ := strings.Cut(pair, "=")
+		keys = append(keys, key)
+	}
+	if !slices.IsSorted(keys) {
+		t.Fatalf("authorize query keys not in ascending order (non-deterministic URL): %v", keys)
+	}
+}
+
+// TestLoginAppendsAuthParamsToAuthorizeURL is the driving use case: an
+// operator-configured idp_identifier reaches Cognito's /authorize so the
+// enterprise email-first IdP-selection step is skipped.
+func TestLoginAppendsAuthParamsToAuthorizeURL(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+
+	_, err := Login(context.Background(), Options{
+		ProfileName:   "staging",
+		Issuer:        idp.URL(),
+		ClientID:      "client-123",
+		Scopes:        "postern/cli-access",
+		AuthParams:    map[string]string{"idp_identifier": "mydomain.com"},
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   idp.OpenBrowser,
+		CallbackPorts: []int{0},
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if got, want := idp.authorizeQuery.Get("idp_identifier"), "mydomain.com"; got != want {
+		t.Fatalf("idp_identifier = %q, want %q", got, want)
+	}
+}
+
+// TestLoginAuthParamsAbsentFromTokenExchange proves AC #4 for the exchange leg:
+// an auth_param rides only on the authorize URL, never on the token POST. The
+// audience param (resource) still reaches exchange — the one param intentionally
+// on both legs — so the assertion distinguishes the two rather than proving the
+// exchange form is merely empty.
+func TestLoginAuthParamsAbsentFromTokenExchange(t *testing.T) {
+	idp := newFakeIDP(t)
+	defer idp.Close()
+
+	_, err := Login(context.Background(), Options{
+		ProfileName:   "staging",
+		Issuer:        idp.URL(),
+		ClientID:      "client-123",
+		Audience:      "https://broker.example.com",
+		AudienceParam: "resource",
+		Scopes:        "postern/cli-access",
+		AuthParams:    map[string]string{"idp_identifier": "mydomain.com"},
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   idp.OpenBrowser,
+		CallbackPorts: []int{0},
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if got := idp.authorizeQuery.Get("idp_identifier"); got != "mydomain.com" {
+		t.Fatalf("idp_identifier on authorize = %q, want mydomain.com", got)
+	}
+	if got := idp.tokenForm.Get("idp_identifier"); got != "" {
+		t.Fatalf("idp_identifier leaked onto token exchange = %q, want empty", got)
+	}
+	if got := idp.tokenForm.Get("resource"); got != "https://broker.example.com" {
+		t.Fatalf("resource missing from token exchange = %q, want the audience", got)
+	}
+}
+
+// TestValidateAuthParams exercises the single-source reserved-param helper:
+// each of the eight fixed keys the OAuth flow controls is rejected, the
+// effective audience_param is rejected when set, an empty audience_param skips
+// only that entry (fixed keys still enforced), and unrelated / empty maps pass.
+func TestValidateAuthParams(t *testing.T) {
+	fixed := []string{
+		"client_id", "redirect_uri", "response_type", "scope", "state",
+		"code_challenge", "code_challenge_method", "access_type",
+	}
+	for _, key := range fixed {
+		if err := ValidateAuthParams(map[string]string{key: "x"}, "resource"); !errors.Is(err, ErrOAuthLoginReservedAuthParam) {
+			t.Fatalf("ValidateAuthParams(%q) error = %v, want ErrOAuthLoginReservedAuthParam", key, err)
+		}
+	}
+
+	if err := ValidateAuthParams(map[string]string{"resource": "x"}, "resource"); !errors.Is(err, ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("ValidateAuthParams(resource, audienceParam=resource) error = %v, want reserved", err)
+	}
+	if err := ValidateAuthParams(map[string]string{"audience": "x"}, "audience"); !errors.Is(err, ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("ValidateAuthParams(audience, audienceParam=audience) error = %v, want reserved", err)
+	}
+
+	// Empty audience_param reserves only the fixed keys.
+	if err := ValidateAuthParams(map[string]string{"resource": "x"}, ""); err != nil {
+		t.Fatalf("ValidateAuthParams(resource, audienceParam=\"\") error = %v, want nil (empty audience param skips that entry)", err)
+	}
+	if err := ValidateAuthParams(map[string]string{"state": "x"}, ""); !errors.Is(err, ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("ValidateAuthParams(state, audienceParam=\"\") error = %v, want reserved (fixed keys always enforced)", err)
+	}
+
+	if err := ValidateAuthParams(map[string]string{"idp_identifier": "mydomain.com"}, "resource"); err != nil {
+		t.Fatalf("ValidateAuthParams(idp_identifier) error = %v, want nil", err)
+	}
+	if err := ValidateAuthParams(nil, "resource"); err != nil {
+		t.Fatalf("ValidateAuthParams(nil) error = %v, want nil", err)
+	}
+}
+
+// TestLoginRejectsReservedAuthParam confirms Login's Options validation wires
+// ValidateAuthParams — a reserved key fails fast before any network call,
+// guarding the public-API contract for wrappers constructing Options directly.
+func TestLoginRejectsReservedAuthParam(t *testing.T) {
+	_, err := Login(context.Background(), Options{
+		ProfileName:   "default",
+		Issuer:        "https://issuer.example.com",
+		ClientID:      "client-123",
+		Scopes:        "postern/cli-access",
+		AuthParams:    map[string]string{"state": "attacker"},
+		Store:         &recordingTokenSaver{},
+		BrowserOpen:   noopBrowserOpen,
+		CallbackPorts: []int{0},
+	})
+	if !errors.Is(err, ErrOAuthLoginReservedAuthParam) {
+		t.Fatalf("Login() error = %v, want errors.Is(ErrOAuthLoginReservedAuthParam)", err)
 	}
 }
 
@@ -326,6 +539,13 @@ func noopBrowserOpen(context.Context, string) error {
 	return nil
 }
 
+func assertQueryValue(t *testing.T, q url.Values, key, want string) {
+	t.Helper()
+	if got := q.Get(key); got != want {
+		t.Fatalf("authorize param %q = %q, want %q", key, got, want)
+	}
+}
+
 // browserlessPrompt captures Login's --no-browser instructions and, on
 // seeing the authorization URL, drives the IdP redirect once — standing in
 // for the engineer opening the printed URL in a browser elsewhere.
@@ -385,14 +605,15 @@ func (s *recordingTokenSaver) Save(profile string, state tokenstore.State) error
 }
 
 type fakeIDP struct {
-	t              *testing.T
-	server         *httptest.Server
-	accessToken    string
-	authorizeQuery url.Values
-	tokenForm      url.Values
-	codeChallenge  string
-	exchangeStatus int
-	exchangeBody   string
+	t                 *testing.T
+	server            *httptest.Server
+	accessToken       string
+	authorizeQuery    url.Values
+	authorizeRawQuery string
+	tokenForm         url.Values
+	codeChallenge     string
+	exchangeStatus    int
+	exchangeBody      string
 
 	signingKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
@@ -464,6 +685,7 @@ func (s *fakeIDP) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}}})
 	case "/authorize":
 		s.authorizeQuery = request.URL.Query()
+		s.authorizeRawQuery = request.URL.RawQuery
 		s.codeChallenge = s.authorizeQuery.Get("code_challenge")
 		redirectURI := s.authorizeQuery.Get("redirect_uri")
 		state := s.authorizeQuery.Get("state")
