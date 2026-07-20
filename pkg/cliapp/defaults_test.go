@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,8 +99,9 @@ func TestDefaultTokenStoreFileDir(t *testing.T) {
 // token endpoint, used to exercise the real defaultAccessToken /
 // defaultLoginRunner closures on the client-credentials branch.
 type ccIDPServer struct {
-	t      *testing.T
-	server *httptest.Server
+	t         *testing.T
+	server    *httptest.Server
+	tokenForm url.Values
 }
 
 func newCCIDPServer(t *testing.T) *ccIDPServer {
@@ -119,6 +121,11 @@ func newCCIDPServer(t *testing.T) *ccIDPServer {
 				"response_types_supported":              []string{"code"},
 			})
 		case "/token":
+			if err := request.ParseForm(); err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			s.tokenForm = request.PostForm
 			writer.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"access_token": ccTestJWT(t),
@@ -192,6 +199,31 @@ func TestDefaultAccessTokenClientCredentialsBypassesStore(t *testing.T) {
 
 	if entries, err := os.ReadDir(filepath.Join(home, ".postern", "tokens")); err == nil && len(entries) > 0 {
 		t.Fatalf("token store written on client-credentials path: %v", entries)
+	}
+}
+
+// TestClientCredentialsPathIgnoresAuthParams proves AC #4 for the
+// client-credentials grant: even when the resolved profile carries auth_params,
+// they never reach the token request. ClientCredentialsOptions has no
+// AuthParams field, so the wiring cannot leak them — this asserts it end to end.
+func TestClientCredentialsPathIgnoresAuthParams(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	idp := newCCIDPServer(t)
+	defer idp.Close()
+
+	lookupEnv := mapEnv(map[string]string{"POSTERN_IDP_CLIENT_SECRET": "s3cr3t"})
+	accessToken := defaultAccessToken("postern", "POSTERN", lookupEnv)
+
+	profile := ccProfile(idp.URL())
+	profile.Profile.IDP.AuthParams = map[string]string{"idp_identifier": "mydomain.com"}
+
+	if _, err := accessToken(context.Background(), profile); err != nil {
+		t.Fatalf("accessToken() error = %v", err)
+	}
+	if got := idp.tokenForm.Get("idp_identifier"); got != "" {
+		t.Fatalf("idp_identifier leaked onto client-credentials token request = %q, want empty", got)
 	}
 }
 

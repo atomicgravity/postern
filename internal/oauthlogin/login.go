@@ -46,6 +46,7 @@ var (
 	ErrOAuthLoginClientIDRequired      = errors.New("client id is required")
 	ErrOAuthLoginTokenStoreRequired    = errors.New("token store is required")
 	ErrOAuthLoginAudienceParamRequired = errors.New("audience param is required when audience is set")
+	ErrOAuthLoginReservedAuthParam     = errors.New("auth param uses a parameter name reserved by the oauth flow")
 
 	ErrOAuthCallbackError         = errors.New("oauth callback returned error")
 	ErrOAuthCallbackStateMismatch = errors.New("oauth callback state mismatch")
@@ -77,6 +78,8 @@ type Options struct {
 	Audience      string
 	AudienceParam string
 	Scopes        string
+	// AuthParams are extra query parameters for the authorize URL only.
+	AuthParams    map[string]string
 	Store         TokenSaver
 	HTTPClient    *http.Client
 	BrowserOpen   BrowserOpenFunc
@@ -142,6 +145,10 @@ func Login(ctx context.Context, options Options) (Result, error) {
 	authOpts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier), oauth2.AccessTypeOffline}
 	if options.Audience != "" {
 		authOpts = append(authOpts, oauth2.SetAuthURLParam(options.AudienceParam, options.Audience))
+	}
+	// auth_params ride on the authorize URL only, never token exchange.
+	for key, value := range options.AuthParams {
+		authOpts = append(authOpts, oauth2.SetAuthURLParam(key, value))
 	}
 	authorizeURL := cfg.AuthCodeURL(state, authOpts...)
 
@@ -323,7 +330,40 @@ func validateOptions(options Options) error {
 	if options.Audience != "" && options.AudienceParam == "" {
 		errs = append(errs, ErrOAuthLoginAudienceParamRequired)
 	}
+	if err := ValidateAuthParams(options.AuthParams, options.AudienceParam); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// reservedAuthParams are the authorize-URL params the OAuth flow sets itself;
+// auth_params may not override them.
+var reservedAuthParams = map[string]struct{}{
+	"client_id":             {},
+	"redirect_uri":          {},
+	"response_type":         {},
+	"scope":                 {},
+	"state":                 {},
+	"code_challenge":        {},
+	"code_challenge_method": {},
+	"access_type":           {},
+}
+
+// ValidateAuthParams rejects auth_params that reuse a reserved authorize-URL
+// parameter (the fixed set, plus a non-empty audienceParam). Exported so the
+// CLI config layer shares one reserved set.
+func ValidateAuthParams(params map[string]string, audienceParam string) error {
+	audienceParam = strings.TrimSpace(audienceParam)
+	for key := range params {
+		key = strings.TrimSpace(key)
+		if _, reserved := reservedAuthParams[key]; reserved {
+			return fmt.Errorf("%w: %q is set by the oauth flow", ErrOAuthLoginReservedAuthParam, key)
+		}
+		if audienceParam != "" && key == audienceParam {
+			return fmt.Errorf("%w: %q is the profile's audience_param", ErrOAuthLoginReservedAuthParam, key)
+		}
+	}
+	return nil
 }
 
 func listenForCallback(ports []int) (net.Listener, string, int, error) {

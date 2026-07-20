@@ -71,9 +71,26 @@ func trimProfile(profile Profile) Profile {
 	profile.IDP.Audience = strings.TrimSpace(profile.IDP.Audience)
 	profile.IDP.AudienceParam = strings.TrimSpace(profile.IDP.AudienceParam)
 	profile.IDP.Scopes = strings.TrimSpace(profile.IDP.Scopes)
+	profile.IDP.AuthParams = trimAuthParams(profile.IDP.AuthParams)
 	profile.DefaultSSHUser = strings.TrimSpace(profile.DefaultSSHUser)
 	profile.TokenStore = strings.TrimSpace(profile.TokenStore)
 	return profile
+}
+
+// trimAuthParams trims keys and values and drops empty-key entries.
+func trimAuthParams(params map[string]string) map[string]string {
+	if len(params) == 0 {
+		return params
+	}
+	trimmed := make(map[string]string, len(params))
+	for key, value := range params {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		trimmed[key] = strings.TrimSpace(value)
+	}
+	return trimmed
 }
 
 // SaveConfig encodes config as YAML to writer.

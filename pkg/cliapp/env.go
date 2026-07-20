@@ -1,6 +1,7 @@
 package cliapp
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -16,6 +17,7 @@ const (
 	idpClientIDEnvSuffix      = "IDP_CLIENT_ID"
 	idpAudienceEnvSuffix      = "IDP_AUDIENCE"
 	idpAudienceParamEnvSuffix = "IDP_AUDIENCE_PARAM"
+	idpAuthParamsEnvSuffix    = "IDP_AUTH_PARAMS"
 	idpScopesEnvSuffix        = "IDP_SCOPES"
 	idpClientSecretEnvSuffix  = "IDP_CLIENT_SECRET"
 	defaultSSHUserEnvSuffix   = "DEFAULT_SSH_USER"
@@ -48,7 +50,7 @@ func EnvName(prefix string, suffix string) string {
 	return prefix + "_" + suffix
 }
 
-func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string) (string, bool)) Profile {
+func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string) (string, bool)) (Profile, error) {
 	setStringFromEnv(&profile.Broker, EnvName(envPrefix, brokerEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.Issuer, EnvName(envPrefix, idpIssuerEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.ClientID, EnvName(envPrefix, idpClientIDEnvSuffix), lookupEnv)
@@ -56,7 +58,57 @@ func applyEnvOverrides(profile Profile, envPrefix string, lookupEnv func(string)
 	setStringFromEnv(&profile.IDP.AudienceParam, EnvName(envPrefix, idpAudienceParamEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.IDP.Scopes, EnvName(envPrefix, idpScopesEnvSuffix), lookupEnv)
 	setStringFromEnv(&profile.DefaultSSHUser, EnvName(envPrefix, defaultSSHUserEnvSuffix), lookupEnv)
-	return profile
+
+	authParamsEnv := EnvName(envPrefix, idpAuthParamsEnvSuffix)
+	if params, ok, err := authParamsFromEnv(authParamsEnv, lookupEnv); err != nil {
+		return profile, err
+	} else if ok {
+		profile.IDP.AuthParams = params
+	}
+
+	return profile, nil
+}
+
+// authParamsFromEnv parses a <PREFIX>_IDP_AUTH_PARAMS override of the form
+// "k=v,k=v". Each comma-separated pair splits on its first '=' (values may
+// contain '='); keys and values are whitespace-trimmed; empty segments from
+// a stray leading or trailing comma are skipped.
+//
+// Unset, empty, or whitespace-only: no override — the file-configured map
+// stands. Any other value replaces the file map entirely. A value with a
+// malformed pair (no '=', or an empty key) or one that trims down to no
+// pairs at all (",,,") is an error: env input never silently clears the
+// map. To remove auth_params, edit the config file.
+func authParamsFromEnv(name string, lookupEnv func(string) (string, bool)) (map[string]string, bool, error) {
+	raw, ok := lookupEnv(name)
+	if !ok {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, false, nil
+	}
+
+	params := make(map[string]string)
+	for _, segment := range strings.Split(raw, ",") {
+		if strings.TrimSpace(segment) == "" {
+			continue
+		}
+		key, value, found := strings.Cut(segment, "=")
+		if !found {
+			return nil, false, fmt.Errorf("%s: malformed entry %q (expected key=value)", name, segment)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, false, fmt.Errorf("%s: entry %q has an empty key", name, segment)
+		}
+		params[key] = strings.TrimSpace(value)
+	}
+
+	if len(params) == 0 {
+		return nil, false, fmt.Errorf("%s is set to %q but contains no key=value pairs; unset or blank it to keep the config-file value", name, raw)
+	}
+
+	return params, true, nil
 }
 
 func setStringFromEnv(target *string, name string, lookupEnv func(string) (string, bool)) {

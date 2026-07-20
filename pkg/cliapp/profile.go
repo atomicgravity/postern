@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/atomicgravity/postern/internal/broker"
+	"github.com/atomicgravity/postern/internal/oauthlogin"
 	"github.com/spf13/cobra"
 )
 
@@ -69,13 +70,18 @@ type Profile struct {
 // browserless service-account flow. The client secret for the
 // client-credentials flow is never read from this struct (or the config
 // file) — it is sourced from <PREFIX>_IDP_CLIENT_SECRET at use time.
+//
+// AuthParams are extra query parameters sent only on the authorize URL of the
+// browser PKCE flow (e.g. Cognito idp_identifier); keys the flow controls are
+// rejected by Validate.
 type IDPConfig struct {
-	Issuer        string `yaml:"issuer"`
-	ClientID      string `yaml:"client_id"`
-	Audience      string `yaml:"audience,omitempty"`
-	AudienceParam string `yaml:"audience_param,omitempty"`
-	Scopes        string `yaml:"scopes,omitempty"`
-	Grant         string `yaml:"grant,omitempty"`
+	Issuer        string            `yaml:"issuer"`
+	ClientID      string            `yaml:"client_id"`
+	Audience      string            `yaml:"audience,omitempty"`
+	AudienceParam string            `yaml:"audience_param,omitempty"`
+	Scopes        string            `yaml:"scopes,omitempty"`
+	Grant         string            `yaml:"grant,omitempty"`
+	AuthParams    map[string]string `yaml:"auth_params,omitempty"`
 }
 
 // usesClientCredentials reports whether the profile selects the
@@ -165,7 +171,11 @@ func (c Config) ResolveProfile(options ResolveProfileOptions) (ResolvedProfile, 
 		return ResolvedProfile{}, fmt.Errorf("profile %q not found (available: %s)", profileName, strings.Join(c.ProfileNames(), ", "))
 	}
 
-	profile = applyEnvOverrides(profile, envPrefix, lookupEnv).WithDefaults()
+	profile, err := applyEnvOverrides(profile, envPrefix, lookupEnv)
+	if err != nil {
+		return ResolvedProfile{}, fmt.Errorf("profile %q: %w", profileName, err)
+	}
+	profile = profile.WithDefaults()
 	if err := profile.Validate(); err != nil {
 		return ResolvedProfile{}, fmt.Errorf("profile %q: %w", profileName, err)
 	}
@@ -220,6 +230,10 @@ func (p Profile) Validate() error {
 	case "", GrantAuthorizationCode, GrantClientCredentials:
 	default:
 		errs = append(errs, ErrIDPUnknownGrant)
+	}
+	// Runs after WithDefaults, so AudienceParam holds its effective value.
+	if err := oauthlogin.ValidateAuthParams(p.IDP.AuthParams, p.IDP.AudienceParam); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
