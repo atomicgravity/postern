@@ -56,7 +56,7 @@ resource "aws_lambda_function" "broker" {
         POSTERN_IDP_AUDIENCE               = var.idp_audience
         POSTERN_IDP_REQUIRED_SCOPE         = var.idp_required_scope
         POSTERN_IDP_PRINCIPAL_CLASSES      = var.idp_principal_classes_json
-        POSTERN_SIGNER_KMS_KEY_ARN         = aws_kms_key.ssh_ca.arn
+        POSTERN_SIGNER_KMS_KEY_ARN         = local.ssh_ca_kms_key_arn
         POSTERN_RATELIMIT_DYNAMODB_TABLE   = aws_dynamodb_table.ratelimit.name
         POSTERN_RATELIMIT_LIMIT            = tostring(var.ratelimit_limit)
         POSTERN_RATELIMIT_WINDOW           = var.ratelimit_window
@@ -102,6 +102,15 @@ resource "aws_lambda_function" "broker" {
     aws_verifiedpermissions_identity_source.broker,
     aws_verifiedpermissions_policy.starter_allow,
   ]
+
+  lifecycle {
+    # The broker's KMS client uses the Lambda's region; KMS rejects a key ARN
+    # from any other region, so catch it at plan instead of at cold start.
+    precondition {
+      condition     = !local.ssh_ca_key_external || split(":", local.ssh_ca_kms_key_arn)[3] == data.aws_region.current.region
+      error_message = "ssh_ca_kms_key_arn must be in the deployment region; use the key's multi-Region replica there."
+    }
+  }
 }
 
 resource "aws_apigatewayv2_api" "broker" {

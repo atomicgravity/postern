@@ -15,12 +15,12 @@ output "broker_apigw_invoke_url" {
 
 output "ssh_ca_kms_key_arn" {
   description = "KMS key ARN of the SSH CA. Use `aws kms get-public-key` to extract the public key for device TrustedUserCAKeys provisioning."
-  value       = aws_kms_key.ssh_ca.arn
+  value       = local.ssh_ca_kms_key_arn
 }
 
 output "ssh_ca_kms_key_id" {
   description = "KMS key ID of the SSH CA."
-  value       = aws_kms_key.ssh_ca.id
+  value       = local.ssh_ca_kms_key_id
 }
 
 output "registry_table_name" {

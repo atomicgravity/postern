@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
 	jose "github.com/go-jose/go-jose/v4"
@@ -107,6 +108,42 @@ func TestKMSSignerSignTimePayloadProducesVerifiableJWS(t *testing.T) {
 	}
 }
 
+// TestKMSSignerPassesKeyARNVerbatim pins that the configured key ARN reaches
+// KMS unmodified, so a key shared from another account (where a bare key ID
+// would resolve against the caller's own account) works for both calls.
+func TestKMSSignerPassesKeyARNVerbatim(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	publicKeyDER, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey() error = %v", err)
+	}
+	const crossAccountARN = "arn:aws:kms:us-west-2:999988887777:key/mrk-0123456789abcdef0123456789abcdef"
+	client := &fakeKMSClient{publicKeyDER: publicKeyDER, privateKey: privateKey}
+	signer, err := NewKMSSigner(context.Background(), client, crossAccountARN)
+	if err != nil {
+		t.Fatalf("NewKMSSigner() error = %v", err)
+	}
+	cert := &ssh.Certificate{
+		Key:             newSubjectPublicKey(t),
+		CertType:        ssh.UserCert,
+		ValidPrincipals: []string{"device-SERIAL123-operator"},
+		ValidBefore:     uint64(time.Now().Add(time.Hour).Unix()),
+	}
+	if err := signer.SignCert(context.Background(), cert); err != nil {
+		t.Fatalf("SignCert() error = %v", err)
+	}
+	if _, err := signer.SignTimePayload(context.Background(), []byte("eyJ.eyJ")); err != nil {
+		t.Fatalf("SignTimePayload() error = %v", err)
+	}
+	want := []string{crossAccountARN, crossAccountARN, crossAccountARN}
+	if strings.Join(client.keyIDs, ",") != strings.Join(want, ",") {
+		t.Fatalf("KMS KeyId per call = %q, want %q", client.keyIDs, want)
+	}
+}
+
 func newSubjectPublicKey(t *testing.T) ssh.PublicKey {
 	t.Helper()
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
@@ -124,13 +161,16 @@ type fakeKMSClient struct {
 	publicKeyDER     []byte
 	privateKey       ed25519.PrivateKey
 	signingAlgorithm types.SigningAlgorithmSpec
+	keyIDs           []string
 }
 
 func (c *fakeKMSClient) GetPublicKey(ctx context.Context, input *kms.GetPublicKeyInput, options ...func(*kms.Options)) (*kms.GetPublicKeyOutput, error) {
+	c.keyIDs = append(c.keyIDs, aws.ToString(input.KeyId))
 	return &kms.GetPublicKeyOutput{PublicKey: c.publicKeyDER}, nil
 }
 
 func (c *fakeKMSClient) Sign(ctx context.Context, input *kms.SignInput, options ...func(*kms.Options)) (*kms.SignOutput, error) {
 	c.signingAlgorithm = input.SigningAlgorithm
+	c.keyIDs = append(c.keyIDs, aws.ToString(input.KeyId))
 	return &kms.SignOutput{Signature: ed25519.Sign(c.privateKey, input.Message)}, nil
 }

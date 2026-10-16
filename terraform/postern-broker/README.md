@@ -42,7 +42,7 @@ See [`examples/terraform/deployment/`](../../examples/terraform/deployment/) for
 
 ## What this creates
 
-- A KMS asymmetric Ed25519 signing key (the SSH CA), with an alias.
+- A KMS asymmetric Ed25519 signing key (the SSH CA), with an alias — unless `ssh_ca_kms_key_arn` supplies an existing key.
 - Two DynamoDB tables: device registry and per-engineer rate-limit, both PAY_PER_REQUEST.
 - An AVP policy store with the broker's Cedar schema, a permissive starter policy, and an identity source — **either Cognito or generic OIDC**, controlled by `avp_identity_source_type`.
 - A CloudWatch log group for broker audit events plus the fixed `ssh-cert-issued` log stream.
@@ -75,6 +75,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `avp_cognito_group_entity_type` | When set (e.g. `"Postern::Group"`), AVP maps `cognito:groups` token claims to Cedar entities of this type — policies can use `principal in Postern::Group::"engineers"`. Requires `avp_schema_json` to declare the entity. Only meaningful when `avp_identity_source_type = "cognito"`. |
 | `avp_install_starter_policy` | `true` (default) creates the bundled permissive starter policy. Set to `false` to manage the full policy set yourself via `aws_verifiedpermissions_policy` resources in the caller. |
 | `avp_schema_json` | Cedar schema JSON to install on the policy store. Empty (default) uses the bundled schema. Override when policies need additional `Device` attributes (bool, Long, or extra String) — Cedar STRICT validation rejects policies referencing undeclared attributes. |
+| `ssh_ca_kms_key_arn` | Null (default) creates the SSH CA key here. Set to an existing Ed25519 `SIGN_VERIFY` key's ARN (key ARN, not alias; in the deployment region) to share one CA across deployments — the module then creates no key or alias and points the broker's IAM grant and `POSTERN_SIGNER_KMS_KEY_ARN` at it. **Cross-account key:** the key's own key policy must allow `kms:Sign` and `kms:GetPublicKey` for the broker Lambda role (`arn:aws:iam::<account>:role/<name_prefix>-broker-lambda`); the module can only grant the role's side. |
 | `registry_backend` | `"dynamodb"` (default) provisions the device-registry table; `"http"` wires the broker to an external HTTP registry service via `registry_http_*` vars and skips the table. |
 | `registry_http_url` | URL of the operator's HTTP registry service. Required when `registry_backend = "http"`. See `docs/registry-http-api.md` for the endpoint contract. |
 | `registry_http_auth_mode` | `"none"` (default), `"bearer"`, or `"aws_sigv4"`. Bearer sends `Authorization: Bearer <token>`. SigV4 signs each request with the broker's Lambda IAM role for an API-Gateway-fronted registry — the Lambda role needs `execute-api:Invoke` attached separately via `broker_lambda_role_name`. |
@@ -100,7 +101,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 |---|---|
 | `broker_url` | URL engineers paste into `~/.postern/config.yaml` under `broker:`. Resolves to `https://<broker_domain_name>` when the custom-domain path is enabled, otherwise the API Gateway invoke URL. |
 | `broker_apigw_invoke_url` | Raw API Gateway invoke URL (diagnostics). |
-| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA. |
+| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA — the module's own key, or the one passed in `ssh_ca_kms_key_arn`. |
 | `ratelimit_table_name` | DynamoDB rate-limit table. |
 | `audit_log_group_name` | Audit log group. |
 | `apigw_access_log_group_name` | APIGW access log group (or `null` when the JWT authorizer is disabled). |
@@ -220,7 +221,7 @@ Operators that don't need the firewalled-device path leave `tunneling_enabled = 
 The broker's KMS-backed CA needs its public key on each device's `TrustedUserCAKeys`. Extract it with:
 
 ```sh
-KEY_ID=$(terraform output -raw ssh_ca_kms_key_id)
+KEY_ID=$(terraform output -raw ssh_ca_kms_key_arn)
 
 {
   printf '\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20'
@@ -230,7 +231,7 @@ KEY_ID=$(terraform output -raw ssh_ca_kms_key_id)
 } | base64 | tr -d '\n' | awk '{print "ssh-ed25519 " $0}'
 ```
 
-The pipeline prints `ssh-ed25519 AAAA...` ready for `/etc/ssh/trusted_user_ca_keys` on every device. Sanity-check the result with `echo "ssh-ed25519 AAAA..." | ssh-keygen -l -f -` — it should report a 256-bit ED25519 fingerprint.
+For a key supplied via `ssh_ca_kms_key_arn` from another account, run this with credentials the key policy allows to call `GetPublicKey` (typically the key's own account). The pipeline prints `ssh-ed25519 AAAA...` ready for `/etc/ssh/trusted_user_ca_keys` on every device. Sanity-check the result with `echo "ssh-ed25519 AAAA..." | ssh-keygen -l -f -` — it should report a 256-bit ED25519 fingerprint.
 
 The manual byte-assembly is necessary because `aws kms get-public-key` returns DER-encoded SPKI but `ssh-keygen -i -m PKCS8` doesn't accept Ed25519 SPKI on macOS (the rest of the keytypes work; Ed25519's PKCS8 import path is missing). Ed25519's SPKI is a fixed 44-byte structure whose last 32 bytes are the raw public key, so the OpenSSH wire format is easy to assemble directly.
 
