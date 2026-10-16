@@ -31,6 +31,9 @@ module "broker" {
   avp_install_starter_policy    = var.avp_install_starter_policy
   avp_schema_json               = var.avp_schema_json
 
+  ssh_ca_kms_key_arn = var.ssh_ca_kms_key_arn
+  create_ssh_ca_key  = var.create_ssh_ca_key
+
   registry_backend           = var.registry_backend
   registry_http_url          = var.registry_http_url
   registry_http_auth_mode    = var.registry_http_auth_mode

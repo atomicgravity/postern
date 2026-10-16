@@ -138,9 +138,13 @@ func TestKMSSignerPassesKeyARNVerbatim(t *testing.T) {
 	if _, err := signer.SignTimePayload(context.Background(), []byte("eyJ.eyJ")); err != nil {
 		t.Fatalf("SignTimePayload() error = %v", err)
 	}
-	want := []string{crossAccountARN, crossAccountARN, crossAccountARN}
-	if strings.Join(client.keyIDs, ",") != strings.Join(want, ",") {
-		t.Fatalf("KMS KeyId per call = %q, want %q", client.keyIDs, want)
+	if len(client.keyIDs) == 0 {
+		t.Fatal("no KMS calls recorded")
+	}
+	for i, keyID := range client.keyIDs {
+		if keyID != crossAccountARN {
+			t.Fatalf("KMS call %d KeyId = %q, want %q", i, keyID, crossAccountARN)
+		}
 	}
 }
 

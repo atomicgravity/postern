@@ -205,13 +205,32 @@ variable "registry_http_timeout" {
 # SSH CA key -------------------------------------------------------------------
 
 variable "ssh_ca_kms_key_arn" {
-  description = "ARN of an existing KMS key to use as the SSH CA (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Null (default) creates the key in this module. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. Setting it on an existing deployment destroys the module-created key (30-day pending deletion), so devices must trust the new CA's public key first."
+  description = "ARN of an existing KMS key for the broker to sign with (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Empty (default) signs with the key this module creates. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. Setting it doesn't remove the module's own key; see create_ssh_ca_key."
   type        = string
-  default     = null
+  default     = ""
+  nullable    = false
 
   validation {
-    condition     = var.ssh_ca_kms_key_arn == null || can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.ssh_ca_kms_key_arn))
+    condition     = var.ssh_ca_kms_key_arn == "" || can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.ssh_ca_kms_key_arn))
     error_message = "ssh_ca_kms_key_arn must be a KMS key ARN (arn:aws:kms:<region>:<account>:key/<key-id>); alias ARNs don't match the broker's IAM grant."
+  }
+
+  validation {
+    # The broker's KMS client uses the Lambda's region, and KMS rejects a key ARN from any other region.
+    condition     = var.ssh_ca_kms_key_arn == "" || try(split(":", var.ssh_ca_kms_key_arn)[3], "") == data.aws_region.current.region
+    error_message = "ssh_ca_kms_key_arn must be in the deployment region; use the key's multi-Region replica there."
+  }
+}
+
+variable "create_ssh_ca_key" {
+  description = "Create the module's own SSH CA key and alias. Keep true (default) on an existing deployment that switches to ssh_ca_kms_key_arn until devices trust the new CA; setting it false schedules the old key for deletion (30-day window). A new deployment that only ever uses ssh_ca_kms_key_arn sets it false from the start."
+  type        = bool
+  default     = true
+  nullable    = false
+
+  validation {
+    condition     = var.create_ssh_ca_key || var.ssh_ca_kms_key_arn != ""
+    error_message = "create_ssh_ca_key = false requires ssh_ca_kms_key_arn; the broker needs a key to sign with."
   }
 }
 

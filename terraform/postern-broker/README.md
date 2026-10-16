@@ -54,7 +54,7 @@ See [`examples/terraform/deployment/`](../../examples/terraform/deployment/) for
 ## Prereqs
 
 - Terraform `>= 1.9.0` (cross-variable validation + `terraform_data` are used).
-- AWS provider `>= 5.70.0` (configured at the caller; the module declares `required_providers` but no `provider` block).
+- AWS provider `>= 6.0` (configured at the caller; the module declares `required_providers` but no `provider` block).
 - An existing IdP (the module wires the broker to it, but does not provision it).
 - For the in-tree Lambda build: `make`, `go`, and `zip` on the apply machine. For pre-built artifacts, set `broker_lambda_zip_path` and skip the toolchain requirement.
 
@@ -75,7 +75,8 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `avp_cognito_group_entity_type` | When set (e.g. `"Postern::Group"`), AVP maps `cognito:groups` token claims to Cedar entities of this type — policies can use `principal in Postern::Group::"engineers"`. Requires `avp_schema_json` to declare the entity. Only meaningful when `avp_identity_source_type = "cognito"`. |
 | `avp_install_starter_policy` | `true` (default) creates the bundled permissive starter policy. Set to `false` to manage the full policy set yourself via `aws_verifiedpermissions_policy` resources in the caller. |
 | `avp_schema_json` | Cedar schema JSON to install on the policy store. Empty (default) uses the bundled schema. Override when policies need additional `Device` attributes (bool, Long, or extra String) — Cedar STRICT validation rejects policies referencing undeclared attributes. |
-| `ssh_ca_kms_key_arn` | Null (default) creates the SSH CA key here. Set to an existing Ed25519 `SIGN_VERIFY` key's ARN (key ARN, not alias; in the deployment region) to share one CA across deployments — the module then creates no key or alias and points the broker's IAM grant and `POSTERN_SIGNER_KMS_KEY_ARN` at it. **Cross-account key:** the key's own key policy must allow `kms:Sign` and `kms:GetPublicKey` for the broker Lambda role (`arn:aws:iam::<account>:role/<name_prefix>-broker-lambda`); the module can only grant the role's side. **Existing deployments:** setting it destroys the module-created key (30-day pending deletion); put the new CA's public key in devices' `TrustedUserCAKeys` first. |
+| `ssh_ca_kms_key_arn` | Empty (default) signs with the module's own key. Set to an existing Ed25519 `SIGN_VERIFY` key's ARN (key ARN, not alias; in the deployment region) to share one CA across deployments; the broker's IAM grant and `POSTERN_SIGNER_KMS_KEY_ARN` point at it. **Cross-account key:** the key's own key policy must allow `kms:Sign` and `kms:GetPublicKey` for the broker Lambda role (`arn:aws:iam::<account>:role/<name_prefix>-broker-lambda`); the module can only grant the role's side. |
+| `create_ssh_ca_key` | `true` (default) creates the module's SSH CA key and alias. Switching an existing deployment to `ssh_ca_kms_key_arn` keeps the old key; set this to `false` only after devices' `TrustedUserCAKeys` hold the new CA (the old key then enters its 30-day pending deletion). A deployment that starts on a shared key sets `false` from the start. |
 | `registry_backend` | `"dynamodb"` (default) provisions the device-registry table; `"http"` wires the broker to an external HTTP registry service via `registry_http_*` vars and skips the table. |
 | `registry_http_url` | URL of the operator's HTTP registry service. Required when `registry_backend = "http"`. See `docs/registry-http-api.md` for the endpoint contract. |
 | `registry_http_auth_mode` | `"none"` (default), `"bearer"`, or `"aws_sigv4"`. Bearer sends `Authorization: Bearer <token>`. SigV4 signs each request with the broker's Lambda IAM role for an API-Gateway-fronted registry — the Lambda role needs `execute-api:Invoke` attached separately via `broker_lambda_role_name`. |
@@ -101,7 +102,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 |---|---|
 | `broker_url` | URL engineers paste into `~/.postern/config.yaml` under `broker:`. Resolves to `https://<broker_domain_name>` when the custom-domain path is enabled, otherwise the API Gateway invoke URL. |
 | `broker_apigw_invoke_url` | Raw API Gateway invoke URL (diagnostics). |
-| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA — the module's own key, or the one passed in `ssh_ca_kms_key_arn`. |
+| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA — the key the broker signs with: `ssh_ca_kms_key_arn` when set, otherwise the module's own. |
 | `ratelimit_table_name` | DynamoDB rate-limit table. |
 | `audit_log_group_name` | Audit log group. |
 | `apigw_access_log_group_name` | APIGW access log group (or `null` when the JWT authorizer is disabled). |

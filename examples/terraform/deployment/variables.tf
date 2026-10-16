@@ -104,6 +104,18 @@ variable "registry_backend" {
   default     = "dynamodb"
 }
 
+variable "ssh_ca_kms_key_arn" {
+  description = "Existing SSH CA key ARN to sign with, shared across deployments. Empty = the module's own key."
+  type        = string
+  default     = ""
+}
+
+variable "create_ssh_ca_key" {
+  description = "Create the module's own SSH CA key. false requires ssh_ca_kms_key_arn."
+  type        = bool
+  default     = true
+}
+
 variable "registry_http_url" {
   description = "HTTP registry URL. Required when registry_backend = \"http\"."
   type        = string
