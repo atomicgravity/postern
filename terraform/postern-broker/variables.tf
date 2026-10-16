@@ -205,7 +205,7 @@ variable "registry_http_timeout" {
 # SSH CA key -------------------------------------------------------------------
 
 variable "ssh_ca_kms_key_arn" {
-  description = "ARN of an existing KMS key to use as the SSH CA (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Null (default) creates the key in this module. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side."
+  description = "ARN of an existing KMS key to use as the SSH CA (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Null (default) creates the key in this module. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. Setting it on an existing deployment destroys the module-created key (30-day pending deletion), so devices must trust the new CA's public key first."
   type        = string
   default     = null
 
