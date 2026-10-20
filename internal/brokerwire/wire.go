@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -116,15 +117,23 @@ func BuildDeps(ctx context.Context, awsConfig aws.Config, config brokerhandlers.
 
 // buildTunnelIssuer wires the optional AWS IoT Secure Tunneling backend.
 // Returns (nil, nil) when the broker YAML omits the tunneling section —
-// /ssh/tunnel returns 501 on operator stacks that don't need it.
+// /ssh/tunnel returns 501 on operator stacks that don't need it. With
+// target_from_registry the backend assumes each device's tunnel role, named
+// after the Lambda function when running in Lambda.
 func buildTunnelIssuer(awsConfig aws.Config, config *brokerhandlers.TunnelingConfig, pipelineDeps broker.PipelineDeps) (*broker.TunnelIssuer, error) {
-	if config == nil || config.IOTRegion == "" {
+	if config == nil || (config.IOTRegion == "" && !config.TargetFromRegistry) {
 		return nil, nil
 	}
 
-	tun, err := tunneling.NewAWSIoTTunnelingFromConfig(awsConfig, config.IOTRegion)
-	if err != nil {
-		return nil, fmt.Errorf("build AWS IoT tunneling: %w", err)
+	var tun broker.Tunneling
+	if config.TargetFromRegistry {
+		tun = tunneling.NewAWSIoTTargetTunnelingFromConfig(awsConfig, os.Getenv("AWS_LAMBDA_FUNCTION_NAME"))
+	} else {
+		fixed, err := tunneling.NewAWSIoTTunnelingFromConfig(awsConfig, config.IOTRegion)
+		if err != nil {
+			return nil, fmt.Errorf("build AWS IoT tunneling: %w", err)
+		}
+		tun = fixed
 	}
 
 	return broker.NewTunnelIssuer(broker.TunnelIssuerDeps{
@@ -132,6 +141,8 @@ func buildTunnelIssuer(awsConfig aws.Config, config *brokerhandlers.TunnelingCon
 		Tunneling:                 tun,
 		DefaultMaxLifetimeMinutes: config.DefaultMaxLifetimeMinutes,
 		ThingNameFormat:           config.ThingNameFormat,
+		TargetFromRegistry:        config.TargetFromRegistry,
+		AllowedRoleARNs:           config.AllowedRoleARNs,
 	})
 }
 

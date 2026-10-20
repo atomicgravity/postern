@@ -1394,3 +1394,144 @@ func mapEnv(values map[string]string) func(string) (string, bool) {
 func emptyBrokerEnv(string) (string, bool) {
 	return "", false
 }
+
+const tunnelingTargetBaseYAML = `
+idp:
+  issuer: https://idp.example.com
+  audience: https://broker.example.com
+signer:
+  kms_key_arn: arn:aws:kms:us-west-2:123:key/file
+registry:
+  dynamodb_table: devices-file
+ratelimit:
+  dynamodb_table: ratelimit-file
+audit:
+  cloudwatch_log_group: /postern/audit-file
+policy:
+  avp_policy_store_id: policy-file
+`
+
+// TestLoadResolvedConfigTunnelingTargetFromFile locks the YAML shape of the
+// registry-targeting pair and its source attribution.
+func TestLoadResolvedConfigTunnelingTargetFromFile(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML+`
+tunneling:
+  target_from_registry: true
+  allowed_role_arns:
+    - " arn:aws:iam::111122223333:role/postern-tunnel "
+    - arn:aws:iam::*:role/fleet-tunnel
+`)
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	tunneling := resolved.Config.Tunneling
+	if tunneling == nil || !tunneling.TargetFromRegistry {
+		t.Fatalf("tunneling = %#v, want target_from_registry", tunneling)
+	}
+	want := []string{"arn:aws:iam::111122223333:role/postern-tunnel", "arn:aws:iam::*:role/fleet-tunnel"}
+	if len(tunneling.AllowedRoleARNs) != len(want) || tunneling.AllowedRoleARNs[0] != want[0] || tunneling.AllowedRoleARNs[1] != want[1] {
+		t.Fatalf("allowed_role_arns = %q, want %q", tunneling.AllowedRoleARNs, want)
+	}
+	for _, field := range []string{"tunneling.target_from_registry", "tunneling.allowed_role_arns"} {
+		if got := resolved.Sources[field]; got != configPath {
+			t.Fatalf("%s source = %q, want %q", field, got, configPath)
+		}
+	}
+}
+
+// TestLoadResolvedConfigTunnelingTargetFromEnv locks the Lambda path: the
+// env vars alone allocate the tunneling section.
+func TestLoadResolvedConfigTunnelingTargetFromEnv(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML)
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{
+		Path: configPath,
+		LookupEnv: mapEnv(map[string]string{
+			"POSTERN_TUNNELING_TARGET_FROM_REGISTRY": "true",
+			"POSTERN_TUNNELING_ALLOWED_ROLE_ARNS":    "arn:aws:iam::111122223333:role/a, arn:aws:iam::*:role/b",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	tunneling := resolved.Config.Tunneling
+	if tunneling == nil || !tunneling.TargetFromRegistry {
+		t.Fatalf("tunneling = %#v, want target_from_registry", tunneling)
+	}
+	if got := tunneling.AllowedRoleARNs; len(got) != 2 || got[1] != "arn:aws:iam::*:role/b" {
+		t.Fatalf("allowed_role_arns = %q", got)
+	}
+	if got, want := resolved.Sources["tunneling.target_from_registry"], "POSTERN_TUNNELING_TARGET_FROM_REGISTRY"; got != want {
+		t.Fatalf("target_from_registry source = %q, want %q", got, want)
+	}
+	if got, want := resolved.Sources["tunneling.allowed_role_arns"], "POSTERN_TUNNELING_ALLOWED_ROLE_ARNS"; got != want {
+		t.Fatalf("allowed_role_arns source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadResolvedConfigTunnelingTargetFromEnvInvalidBool(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML)
+	_, err := LoadResolvedConfig(LoadConfigOptions{
+		Path:      configPath,
+		LookupEnv: mapEnv(map[string]string{"POSTERN_TUNNELING_TARGET_FROM_REGISTRY": "yes please"}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "POSTERN_TUNNELING_TARGET_FROM_REGISTRY") {
+		t.Fatalf("LoadResolvedConfig() error = %v, want invalid boolean naming the env var", err)
+	}
+}
+
+func TestValidateTunnelingTarget(t *testing.T) {
+	cases := []struct {
+		name      string
+		tunneling TunnelingConfig
+		want      error
+	}{
+		{name: "flag without allowlist", tunneling: TunnelingConfig{TargetFromRegistry: true}, want: ErrTunnelingAllowedRoleARNsRequired},
+		{name: "allowlist without flag", tunneling: TunnelingConfig{IOTRegion: "us-west-2", AllowedRoleARNs: []string{"arn:aws:iam::1:role/x"}}, want: ErrTunnelingAllowedRoleARNsUnexpected},
+		{name: "non-ARN entry", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"postern-tunnel"}}, want: ErrTunnelingAllowedRoleARNInvalid},
+		{name: "valid", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:aws:iam::*:role/x"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tunneling := tc.tunneling
+			config := Config{
+				Listen:    ListenConfig{Addr: ":8080"},
+				IDP:       IDPConfig{Issuer: "https://idp.example.com", Audience: "https://broker.example.com"},
+				Signer:    SignerConfig{KMSKeyARN: "arn:aws:kms:us-west-2:123:key/file"},
+				Registry:  RegistryConfig{DynamoDBTable: "devices-file"},
+				RateLimit: RateLimitConfig{DynamoDBTable: "ratelimit-file", Limit: 60, Window: Duration(time.Minute)},
+				Audit:     AuditConfig{CloudWatchLogGroup: "/postern/audit-file"},
+				Policy:    PolicyConfig{AVPPolicyStoreID: "policy-file"},
+				CertTTL:   CertTTLConfig{Operator: Duration(8 * time.Hour)},
+				Tunneling: &tunneling,
+			}
+			err := config.Validate()
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Validate() error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrintResolvedConfigTunnelingOffOmitsTargetFields locks off-mode output:
+// --print-config for an existing tunneling section is unchanged.
+func TestPrintResolvedConfigTunnelingOffOmitsTargetFields(t *testing.T) {
+	var buffer bytes.Buffer
+	err := PrintResolvedConfig(&buffer, ResolvedConfig{Config: Config{Tunneling: &TunnelingConfig{IOTRegion: "us-west-2"}}})
+	if err != nil {
+		t.Fatalf("PrintResolvedConfig() error = %v", err)
+	}
+	for _, key := range []string{"target_from_registry", "allowed_role_arns"} {
+		if strings.Contains(buffer.String(), key) {
+			t.Fatalf("print-config output contains %q:\n%s", key, buffer.String())
+		}
+	}
+}

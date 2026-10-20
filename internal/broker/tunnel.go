@@ -42,11 +42,18 @@ var ErrTunnelingThingNameFormatInvalid = errors.New("tunneling thing-name format
 // omits --max-lifetime; zero falls back to DefaultTunnelLifetimeMinutes.
 // ThingNameFormat must contain exactly one "{serial}" placeholder; empty
 // falls back to "device-{serial}".
+//
+// TargetFromRegistry makes each tunnel open where the device record says
+// (TunnelRoleARNAttribute + TunnelRegionAttribute) instead of in the
+// backend's own account; AllowedRoleARNs (exact ARNs or `*` globs) bounds
+// which roles a registry entry may name and must be non-empty in that mode.
 type TunnelIssuerDeps struct {
 	PipelineDeps
 	Tunneling                 Tunneling
 	DefaultMaxLifetimeMinutes int32
 	ThingNameFormat           string
+	TargetFromRegistry        bool
+	AllowedRoleARNs           []string
 }
 
 // TunnelIssuer runs /ssh/tunnel's pipeline.
@@ -55,6 +62,8 @@ type TunnelIssuer struct {
 	tunneling          Tunneling
 	defaultMaxLifetime int32
 	thingNameFormat    string
+	targetFromRegistry bool
+	allowedRoleARNs    []string
 }
 
 // NewTunnelIssuer constructs a TunnelIssuer. Missing deps return joined Err*
@@ -78,7 +87,13 @@ func NewTunnelIssuer(deps TunnelIssuerDeps) (*TunnelIssuer, error) {
 		formatErr = fmt.Errorf("%w: %q", ErrTunnelingThingNameFormatInvalid, format)
 	}
 
-	if joined := errors.Join(pipelineErr, tunnelingErr, formatErr); joined != nil {
+	allowedRoleARNs := normalizeAllowedRoleARNs(deps.AllowedRoleARNs)
+	var targetErr error
+	if deps.TargetFromRegistry && len(allowedRoleARNs) == 0 {
+		targetErr = ErrTunnelingAllowedRoleARNsRequired
+	}
+
+	if joined := errors.Join(pipelineErr, tunnelingErr, formatErr, targetErr); joined != nil {
 		return nil, joined
 	}
 
@@ -95,6 +110,8 @@ func NewTunnelIssuer(deps TunnelIssuerDeps) (*TunnelIssuer, error) {
 		tunneling:          deps.Tunneling,
 		defaultMaxLifetime: defaultLifetime,
 		thingNameFormat:    format,
+		targetFromRegistry: deps.TargetFromRegistry,
+		allowedRoleARNs:    allowedRoleARNs,
 	}, nil
 }
 
@@ -160,6 +177,25 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		return TunnelOpenResponse{}, denial.Err
 	}
 
+	// Target checks run after Policy so an unauthorized engineer learns
+	// nothing about the device's tunnel configuration.
+	var target *TunnelTarget
+	if i.targetFromRegistry {
+		resolved, targetDenial := resolveTunnelTarget(deviceCtx.Device, i.allowedRoleARNs)
+		if targetDenial != nil {
+			event := denialTemplate(engineerCtx)
+			event.DeviceSerial = deviceCtx.Device.Serial
+			i.recordTunnelDenialFor(ctx, event, targetDenial.reason, request)
+			slog.Warn("tunnel target rejected",
+				slog.String("denied_reason", targetDenial.reason),
+				slog.String("detail", targetDenial.detail),
+				slog.String("device_serial", deviceCtx.Device.Serial),
+				slog.String("jti", engineerCtx.JTI))
+			return TunnelOpenResponse{}, targetDenial.err
+		}
+		target = resolved
+	}
+
 	// tunnel_authorized records the resolved TTL by reusing ValidBefore
 	// (overloaded as Issue+TTL for tunnel rows). JTI joins authorized↔issued
 	// on success or authorized↔denied on AWS failure.
@@ -188,6 +224,7 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		ThingName:          i.thingName(deviceCtx.Device.Serial),
 		Services:           []string{"SSH"},
 		MaxLifetimeMinutes: resolvedLifetime,
+		Target:             target,
 	})
 	if err != nil {
 		denied := authorized
@@ -199,13 +236,20 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		// facing 5xx. The wire response carries only the deny_reason literal;
 		// the operator needs the SDK message (AccessDenied, ResourceNotFound,
 		// region misconfiguration, ...) to diagnose.
-		slog.Error("tunneling backend OpenTunnel failed",
+		attrs := []any{
 			slog.String("err", err.Error()),
 			slog.String("denied_reason", denied.DeniedReason),
 			slog.String("engineer_sub", engineerCtx.Caller.Subject),
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("thing_name", i.thingName(deviceCtx.Device.Serial)),
-			slog.String("jti", engineerCtx.JTI))
+			slog.String("jti", engineerCtx.JTI),
+		}
+		if target != nil {
+			attrs = append(attrs,
+				slog.String("tunnel_role_arn", target.RoleARN),
+				slog.String("tunnel_region", target.Region))
+		}
+		slog.Error("tunneling backend OpenTunnel failed", attrs...)
 		return TunnelOpenResponse{}, mapTunnelingError(err)
 	}
 

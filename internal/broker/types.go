@@ -99,6 +99,24 @@ const (
 	DenyReasonMaxLifetimeExceedsCeiling = "max_lifetime_exceeds_ceiling"
 	DenyReasonTunnelingUnavailable      = "tunneling_unavailable"
 	DenyReasonTunnelLimitExceeded       = "tunnel_limit_exceeded"
+
+	// Registry-targeted tunneling (tunneling.target_from_registry) denials.
+	// `tunnel_target_missing`: the device record carries neither target
+	// attribute. `tunnel_target_invalid`: only one is set, a value isn't a
+	// string, the role ARN is malformed, or the region is malformed.
+	// `tunnel_role_not_allowed`: the role ARN matches no
+	// tunneling.allowed_role_arns entry.
+	DenyReasonTunnelTargetMissing  = "tunnel_target_missing"
+	DenyReasonTunnelTargetInvalid  = "tunnel_target_invalid"
+	DenyReasonTunnelRoleNotAllowed = "tunnel_role_not_allowed"
+)
+
+// Device attributes the tunnel pipeline reads when
+// tunneling.target_from_registry is on: the IAM role the broker assumes to
+// open the tunnel and the region whose tunneling endpoint it calls.
+const (
+	TunnelRoleARNAttribute = "tunnel_role_arn"
+	TunnelRegionAttribute  = "tunnel_region"
 )
 
 // Cedar action labels referenced by AVP policies. Part of the operator-
@@ -327,10 +345,23 @@ type Tunneling interface {
 // IoT thing-name the destination-side proxy subscribes under, produced by
 // substituting the registry-resolved serial into the operator-configured
 // tunneling.thing_name_format (default "device-{serial}").
+//
+// Target is nil unless tunneling.target_from_registry is on; then it names
+// the role to assume and the region to open the tunnel in, taken from the
+// device record.
 type TunnelOpenInternal struct {
 	ThingName          string
 	Services           []string
 	MaxLifetimeMinutes int32
+	Target             *TunnelTarget
+}
+
+// TunnelTarget is where a registry-targeted tunnel opens: the backend
+// assumes RoleARN and calls the tunneling API in Region. Comparable, so the
+// backend can key its per-target client cache on it.
+type TunnelTarget struct {
+	RoleARN string
+	Region  string
 }
 
 // TunnelOpenResult is the broker-domain response from a successful tunnel

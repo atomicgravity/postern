@@ -8,11 +8,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/atomicgravity/postern/internal/broker"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling"
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 // ErrTunnelingRegionRequired is returned when the region is empty. The CLI
@@ -27,11 +31,21 @@ type AWSIoTClient interface {
 	OpenTunnel(context.Context, *iotsecuretunneling.OpenTunnelInput, ...func(*iotsecuretunneling.Options)) (*iotsecuretunneling.OpenTunnelOutput, error)
 }
 
+// DefaultRoleSessionName is the AssumeRole session name when the caller
+// supplies none (outside Lambda, where the function name is unavailable).
+const DefaultRoleSessionName = "postern-broker"
+
+// maxRoleSessionNameLen is the STS RoleSessionName ceiling.
+const maxRoleSessionNameLen = 64
+
 // AWSIoTTunneling is the broker's Tunneling impl. Each OpenTunnel call
-// translates broker.TunnelOpenInternal into one iotsecuretunneling RPC.
+// translates broker.TunnelOpenInternal into one iotsecuretunneling RPC,
+// either on the fixed client (own account + region) or, for a request with
+// a Target, on a client holding that target role's assumed credentials.
 type AWSIoTTunneling struct {
-	client AWSIoTClient
-	region string
+	client  AWSIoTClient
+	region  string
+	targets *targetClients
 }
 
 // NewAWSIoTTunneling constructs against an existing AWS client.
@@ -52,11 +66,107 @@ func NewAWSIoTTunnelingFromConfig(config aws.Config, region string) (*AWSIoTTunn
 	return NewAWSIoTTunneling(client, region)
 }
 
+// NewAWSIoTTargetTunnelingFromConfig builds the registry-targeted impl: every
+// request must carry a Target, and the tunnel opens in Target.Region with
+// credentials from assuming Target.RoleARN. config supplies the broker's own
+// credentials for the STS call. sessionName identifies the broker in the
+// target account's CloudTrail; it is sanitized to the STS character set and
+// length, and empty falls back to DefaultRoleSessionName.
+func NewAWSIoTTargetTunnelingFromConfig(config aws.Config, sessionName string) *AWSIoTTunneling {
+	stsClient := sts.NewFromConfig(config)
+	sessionName = roleSessionName(sessionName)
+	return newTargetTunneling(
+		func(roleARN string) aws.CredentialsProvider {
+			return aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(options *stscreds.AssumeRoleOptions) {
+				options.RoleSessionName = sessionName
+			}))
+		},
+		func(credentials aws.CredentialsProvider, region string) AWSIoTClient {
+			return iotsecuretunneling.NewFromConfig(config, func(options *iotsecuretunneling.Options) {
+				options.Region = region
+				options.Credentials = credentials
+			})
+		},
+	)
+}
+
+func newTargetTunneling(newCredentials func(roleARN string) aws.CredentialsProvider, newClient func(aws.CredentialsProvider, string) AWSIoTClient) *AWSIoTTunneling {
+	return &AWSIoTTunneling{targets: &targetClients{
+		newCredentials: newCredentials,
+		newClient:      newClient,
+		credentials:    map[string]aws.CredentialsProvider{},
+		clients:        map[broker.TunnelTarget]AWSIoTClient{},
+	}}
+}
+
+// targetClients caches one credentials cache per role ARN (so concurrent
+// requests share one AssumeRole until expiry) and one SDK client per
+// (role, region). The key space is bounded by the broker's role allowlist
+// times the regions devices name.
+type targetClients struct {
+	newCredentials func(roleARN string) aws.CredentialsProvider
+	newClient      func(aws.CredentialsProvider, string) AWSIoTClient
+
+	mu          sync.Mutex
+	credentials map[string]aws.CredentialsProvider
+	clients     map[broker.TunnelTarget]AWSIoTClient
+}
+
+func (c *targetClients) client(target broker.TunnelTarget) AWSIoTClient {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if client, ok := c.clients[target]; ok {
+		return client
+	}
+	credentials, ok := c.credentials[target.RoleARN]
+	if !ok {
+		credentials = c.newCredentials(target.RoleARN)
+		c.credentials[target.RoleARN] = credentials
+	}
+	client := c.newClient(credentials, target.Region)
+	c.clients[target] = client
+	return client
+}
+
+// roleSessionName maps name onto the STS RoleSessionName alphabet
+// ([\w+=,.@-], 2-64 chars), replacing other characters with '-'.
+func roleSessionName(name string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', strings.ContainsRune("_+=,.@-", r):
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('-')
+		}
+	}
+	sanitized := builder.String()
+	if len(sanitized) > maxRoleSessionNameLen {
+		sanitized = sanitized[:maxRoleSessionNameLen]
+	}
+	if len(sanitized) < 2 {
+		return DefaultRoleSessionName
+	}
+	return sanitized
+}
+
 // OpenTunnel calls iotsecuretunneling.OpenTunnel. AWS errors are wrapped via
 // broker.TunnelingErrorClassifier so the pipeline can map
-// LimitExceededException distinctly from generic AWS failures.
+// LimitExceededException distinctly from generic AWS failures. A request
+// whose Target presence doesn't match how the impl was built fails rather
+// than opening the tunnel in the wrong account.
 func (t *AWSIoTTunneling) OpenTunnel(ctx context.Context, request broker.TunnelOpenInternal) (broker.TunnelOpenResult, error) {
-	output, err := t.client.OpenTunnel(ctx, &iotsecuretunneling.OpenTunnelInput{
+	client, region := t.client, t.region
+	switch {
+	case request.Target != nil && t.targets == nil:
+		return broker.TunnelOpenResult{}, wrap(broker.TunnelingErrorUnknown, errors.New("tunnel target given but registry targeting is not configured"))
+	case request.Target == nil && t.targets != nil:
+		return broker.TunnelOpenResult{}, wrap(broker.TunnelingErrorUnknown, errors.New("registry targeting is configured but the request has no tunnel target"))
+	case request.Target != nil:
+		client, region = t.targets.client(*request.Target), request.Target.Region
+	}
+
+	output, err := client.OpenTunnel(ctx, &iotsecuretunneling.OpenTunnelInput{
 		DestinationConfig: &types.DestinationConfig{
 			ThingName: aws.String(request.ThingName),
 			Services:  request.Services,
@@ -79,7 +189,7 @@ func (t *AWSIoTTunneling) OpenTunnel(ctx context.Context, request broker.TunnelO
 	return broker.TunnelOpenResult{
 		TunnelID:          *output.TunnelId,
 		SourceAccessToken: *output.SourceAccessToken,
-		Region:            t.region,
+		Region:            region,
 	}, nil
 }
 
