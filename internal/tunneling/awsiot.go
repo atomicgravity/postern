@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/atomicgravity/postern/internal/broker"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -79,7 +80,10 @@ func NewAWSIoTTargetTunnelingFromConfig(config aws.Config, sessionName string) *
 		func(roleARN string) aws.CredentialsProvider {
 			return aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(options *stscreds.AssumeRoleOptions) {
 				options.RoleSessionName = sessionName
-			}))
+			}), func(options *aws.CredentialsCacheOptions) {
+				// Refresh early so a request never signs with credentials that expire in flight.
+				options.ExpiryWindow = time.Minute
+			})
 		},
 		func(credentials aws.CredentialsProvider, region string) AWSIoTClient {
 			return iotsecuretunneling.NewFromConfig(config, func(options *iotsecuretunneling.Options) {
