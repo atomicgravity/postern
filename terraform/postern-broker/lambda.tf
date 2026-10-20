@@ -86,6 +86,12 @@ resource "aws_lambda_function" "broker" {
         POSTERN_TUNNELING_IOT_REGION                   = var.tunneling_iot_region != "" ? var.tunneling_iot_region : data.aws_region.current.region
         POSTERN_TUNNELING_DEFAULT_MAX_LIFETIME_MINUTES = tostring(var.tunneling_default_max_lifetime_minutes)
         POSTERN_TUNNELING_THING_NAME_FORMAT            = var.tunneling_thing_name_format
+      } : {},
+      # Registry-targeted tunneling. Absent unless both flags are on, so
+      # existing stacks' environment is unchanged.
+      var.tunneling_enabled && var.tunneling_target_from_registry ? {
+        POSTERN_TUNNELING_TARGET_FROM_REGISTRY = "true"
+        POSTERN_TUNNELING_ALLOWED_ROLE_ARNS    = join(",", var.tunneling_allowed_role_arns)
       } : {}
     )
   }

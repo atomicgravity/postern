@@ -75,13 +75,25 @@ data "aws_iam_policy_document" "broker_lambda_inline" {
 
   # iot:OpenTunnel for the firewalled-device path. Gated by
   # tunneling_enabled so operators that don't need the firewalled-device
-  # path don't carry the IAM permission.
+  # path don't carry the IAM permission. Registry-targeted tunnels open
+  # under the assumed target role, so the broker's own grant is dropped then.
   dynamic "statement" {
-    for_each = var.tunneling_enabled ? [1] : []
+    for_each = var.tunneling_enabled && !var.tunneling_target_from_registry ? [1] : []
     content {
       sid       = "TunnelingOpen"
       actions   = ["iot:OpenTunnel"]
       resources = ["*"]
+    }
+  }
+
+  # sts:AssumeRole on the allowlisted per-device tunnel roles. Each target
+  # role's trust policy must also trust this role.
+  dynamic "statement" {
+    for_each = var.tunneling_enabled && var.tunneling_target_from_registry ? [1] : []
+    content {
+      sid       = "TunnelingAssumeTargetRole"
+      actions   = ["sts:AssumeRole"]
+      resources = var.tunneling_allowed_role_arns
     }
   }
 }

@@ -95,6 +95,8 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `tunneling_iot_region` | Empty by default. AWS region for the broker's IoT secure-tunneling client; empty resolves to the deployment region. Cross-region operators set this explicitly. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_default_max_lifetime_minutes` | `480` (8 hours) by default. Broker fallback TTL when the engineer omits `--max-lifetime`. AWS caps individual tunnels at 720 (12 hours); the module validation enforces the (0, 720] range. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_thing_name_format` | `"device-{serial}"` by default. Format the broker substitutes the resolved device serial into when calling AWS IoT `OpenTunnel`; `{serial}` is replaced with the registry-resolved hardware serial, other characters pass through verbatim. The placeholder must appear exactly once. Only consulted when `tunneling_enabled = true`. |
+| `tunneling_target_from_registry` | `false` by default. When `true`, each tunnel opens in the account and region the device's Registry record names (`tunnel_role_arn`, `tunnel_region`) instead of the broker's own; the broker role gets `sts:AssumeRole` on `tunneling_allowed_role_arns` in place of `iot:OpenTunnel`. See "Tunnels in the device's account" below. Only consulted when `tunneling_enabled = true`. |
+| `tunneling_allowed_role_arns` | `[]` by default. Role ARNs (exact or `*` globs) a device record may name; both the broker's allowlist and the `sts:AssumeRole` resource list. Required non-empty when `tunneling_target_from_registry = true`, must be empty otherwise. |
 
 ## Outputs
 
@@ -204,7 +206,7 @@ When `tunneling_enabled = true`, the module wires the broker for the firewalled-
 
 What this module provisions for the path:
 
-- An IAM statement on the broker Lambda role granting `iot:OpenTunnel`.
+- An IAM statement on the broker Lambda role granting `iot:OpenTunnel` (or, with `tunneling_target_from_registry = true`, `sts:AssumeRole` on the allowed target roles).
 - `POSTERN_TUNNELING_IOT_REGION` on the broker Lambda's environment. Empty `tunneling_iot_region` resolves to the deployment region (`data.aws_region.current.region`) so single-region operators don't need to set it.
 - `POSTERN_TUNNELING_DEFAULT_MAX_LIFETIME_MINUTES` on the broker Lambda's environment. Default `480` (8 hours); validation pins the range to (0, 720] minutes (AWS caps individual tunnels at 12 hours).
 - `POSTERN_TUNNELING_THING_NAME_FORMAT` on the broker Lambda's environment. Carries the `tunneling_thing_name_format` value through to the broker.
@@ -216,6 +218,25 @@ What this module does **not** provision:
 - **MQTT topic management.** AWS IoT publishes the destination access token to `$aws/things/device-<serial>/tunnels/notify` on `OpenTunnel`; the device's secure-tunneling component subscribes to it directly. The broker has no MQTT involvement.
 
 Operators that don't need the firewalled-device path leave `tunneling_enabled = false` (the default). The /ssh/tunnel handler returns 501; the broker carries no `iot:` IAM permission; there is no AWS-side cost.
+
+### Tunnels in the device's account
+
+One broker can serve devices whose IoT things live in other accounts and regions. Set `tunneling_target_from_registry = true` and list the target roles in `tunneling_allowed_role_arns`. For every `/ssh/tunnel` request the broker then reads two string attributes from the device's Registry record, after Policy allows the request:
+
+- `tunnel_role_arn` — the IAM role the broker assumes (STS `AssumeRole`; session name = the Lambda function name). Credentials are cached per role until they expire.
+- `tunnel_region` — the region whose IoT Secure Tunneling endpoint the broker calls. It is returned to the CLI, which dials that region's data plane.
+
+The module renders `POSTERN_TUNNELING_TARGET_FROM_REGISTRY` and `POSTERN_TUNNELING_ALLOWED_ROLE_ARNS` (comma-joined) on the Lambda, grants `sts:AssumeRole` on the allowlist, and drops the broker's own `iot:OpenTunnel` grant, since no tunnel opens under the broker role in this mode. `POSTERN_TUNNELING_IOT_REGION` is still set but unused. Each target account provides the role: `iot:OpenTunnel` on its things, and a trust policy that allows the broker Lambda role (output `broker_lambda_role_arn`) to assume it.
+
+The broker denies, with a `tunnel_denied` audit row, instead of falling back to its own account:
+
+| `denied_reason` | HTTP | Cause |
+|---|---|---|
+| `tunnel_target_missing` | 409 | The record has neither attribute. The device stays reachable over LAN SSH. |
+| `tunnel_target_invalid` | 500 | Only one attribute is set, a value is not a string, the role ARN is not an IAM role ARN, or the region is not an AWS region code. |
+| `tunnel_role_not_allowed` | 403 | The role ARN matches no `tunneling_allowed_role_arns` entry. |
+
+The broker logs the specific cause (`tunnel target rejected`) next to the audit row. The two attributes also reach Cedar on the `Device` entity like any other Registry attribute; a schema whose policies reference them must declare them (see `avp_schema_json`).
 
 ## Extracting the SSH CA public key for devices
 
