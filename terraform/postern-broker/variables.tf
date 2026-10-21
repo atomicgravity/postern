@@ -205,7 +205,7 @@ variable "registry_http_timeout" {
 # SSH CA key -------------------------------------------------------------------
 
 variable "ssh_ca_kms_key_arn" {
-  description = "ARN of an existing KMS key for the broker to sign with (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Empty (default) signs with the key this module creates. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. Setting it doesn't remove the module's own key; see create_ssh_ca_key."
+  description = "ARN of an existing KMS key for the broker to sign with (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Empty (default) signs with the key this module creates. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. The broker signs with this key from the apply that sets it, so devices' TrustedUserCAKeys (and the timefix-apply pinned CA pubkey) must hold its public key first, or they reject every cert. See create_ssh_ca_key for the module's own key."
   type        = string
   default     = ""
   nullable    = false
@@ -223,13 +223,12 @@ variable "ssh_ca_kms_key_arn" {
 }
 
 variable "create_ssh_ca_key" {
-  description = "Create the module's own SSH CA key and alias. Keep true (default) on an existing deployment that switches to ssh_ca_kms_key_arn until devices trust the new CA; setting it false schedules the old key for deletion (30-day window). A new deployment that only ever uses ssh_ca_kms_key_arn sets it false from the start."
+  description = "Create the module's own SSH CA key. Unset (default) creates it only when ssh_ca_kms_key_arn is empty. An existing deployment switching to ssh_ca_kms_key_arn sets true to keep its old key for rollback (the broker no longer signs with it, and its alias is removed); setting it false later schedules that key for deletion (30-day window)."
   type        = bool
-  default     = true
-  nullable    = false
+  default     = null
 
   validation {
-    condition     = var.create_ssh_ca_key || var.ssh_ca_kms_key_arn != ""
+    condition     = var.create_ssh_ca_key != false || var.ssh_ca_kms_key_arn != ""
     error_message = "create_ssh_ca_key = false requires ssh_ca_kms_key_arn; the broker needs a key to sign with."
   }
 }

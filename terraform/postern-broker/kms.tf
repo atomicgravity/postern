@@ -11,11 +11,11 @@
 # create a new key, update terraform.tfvars and reapply, then re-deploy
 # device TrustedUserCAKeys to include the new pubkey.
 #
-# The broker signs with var.ssh_ca_kms_key_arn when set. This key stays
-# until create_ssh_ca_key = false, so switching never destroys the CA that
-# devices trust today; retire it only after they trust the new one.
+# Setting var.ssh_ca_kms_key_arn moves the broker to that key on the same
+# apply, so devices must trust its pubkey first. This key then stays only for
+# rollback until create_ssh_ca_key = false.
 resource "aws_kms_key" "ssh_ca" {
-  count = var.create_ssh_ca_key ? 1 : 0
+  count = local.create_ssh_ca_key ? 1 : 0
 
   description              = "Postern SSH CA — signs SSH certificates issued by the broker."
   customer_master_key_spec = "ECC_NIST_EDWARDS25519"
@@ -25,8 +25,10 @@ resource "aws_kms_key" "ssh_ca" {
   tags                     = var.tags
 }
 
+# Only while this key is the signer: a retained rollback key under the
+# canonical alias would hand out the wrong CA pubkey.
 resource "aws_kms_alias" "ssh_ca" {
-  count = var.create_ssh_ca_key ? 1 : 0
+  count = local.create_ssh_ca_key && !local.ssh_ca_key_external ? 1 : 0
 
   name          = "alias/${var.name_prefix}-ssh-ca"
   target_key_id = aws_kms_key.ssh_ca[0].id
@@ -34,6 +36,7 @@ resource "aws_kms_alias" "ssh_ca" {
 
 locals {
   ssh_ca_key_external = var.ssh_ca_kms_key_arn != ""
+  create_ssh_ca_key   = var.create_ssh_ca_key != null ? var.create_ssh_ca_key : !local.ssh_ca_key_external
   ssh_ca_kms_key_arn  = local.ssh_ca_key_external ? var.ssh_ca_kms_key_arn : aws_kms_key.ssh_ca[0].arn
   ssh_ca_kms_key_id   = local.ssh_ca_key_external ? element(split("/", var.ssh_ca_kms_key_arn), 1) : aws_kms_key.ssh_ca[0].id
 }

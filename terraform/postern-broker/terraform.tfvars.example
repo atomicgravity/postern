@@ -21,9 +21,10 @@ avp_cognito_client_ids    = ["REPLACE_CLI_CLIENT_ID"]
 # SSH CA key. Leave unset to sign with a key created in this stack. Set it to
 # share one existing Ed25519 key across deployments; a key in another account
 # needs its key policy to allow kms:Sign + kms:GetPublicKey for
-# <name_prefix>-broker-lambda. create_ssh_ca_key = false retires this stack's key.
+# <name_prefix>-broker-lambda. The broker signs with it from that apply, so
+# devices must trust its pubkey first. An existing stack switching over can set
+# create_ssh_ca_key = true to keep its old key for rollback.
 # ssh_ca_kms_key_arn = "arn:aws:kms:us-west-2:111122223333:key/mrk-REPLACE"
-# create_ssh_ca_key  = false
 
 # Registry backend. "dynamodb" (default) provisions the device-registry table;
 # "http" wires the broker to an external HTTP registry service and skips the

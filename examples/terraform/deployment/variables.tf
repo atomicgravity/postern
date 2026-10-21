@@ -111,9 +111,9 @@ variable "ssh_ca_kms_key_arn" {
 }
 
 variable "create_ssh_ca_key" {
-  description = "Create the module's own SSH CA key. false requires ssh_ca_kms_key_arn."
+  description = "Create the module's own SSH CA key. Unset = only when ssh_ca_kms_key_arn is empty; true keeps it for rollback after switching."
   type        = bool
-  default     = true
+  default     = null
 }
 
 variable "registry_http_url" {
