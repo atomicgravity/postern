@@ -202,6 +202,37 @@ variable "registry_http_timeout" {
   default     = ""
 }
 
+# SSH CA key -------------------------------------------------------------------
+
+variable "ssh_ca_kms_key_arn" {
+  description = "ARN of an existing KMS key for the broker to sign with (key ARN, not an alias ARN; ECC_NIST_EDWARDS25519, SIGN_VERIFY). Empty (default) signs with the key this module creates. Set it to share one CA across several broker deployments. The key must be in the deployment region (use a multi-Region replica for other regions). When the key lives in another account, that account's key policy must allow kms:Sign and kms:GetPublicKey for the broker Lambda role (`<name_prefix>-broker-lambda`, see the broker_lambda_role_arn output); the module only grants the role's side. The broker signs with this key from the apply that sets it, so devices' TrustedUserCAKeys (and the timefix-apply pinned CA pubkey) must hold its public key first, or they reject every cert. See create_ssh_ca_key for the module's own key."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.ssh_ca_kms_key_arn == "" || can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.ssh_ca_kms_key_arn))
+    error_message = "ssh_ca_kms_key_arn must be a KMS key ARN (arn:aws:kms:<region>:<account>:key/<key-id>); alias ARNs don't match the broker's IAM grant."
+  }
+
+  validation {
+    # The broker's KMS client uses the Lambda's region, and KMS rejects a key ARN from any other region.
+    condition     = var.ssh_ca_kms_key_arn == "" || try(split(":", var.ssh_ca_kms_key_arn)[3], "") == data.aws_region.current.region
+    error_message = "ssh_ca_kms_key_arn must be in the deployment region; use the key's multi-Region replica there."
+  }
+}
+
+variable "create_ssh_ca_key" {
+  description = "Create the module's own SSH CA key. Unset (default) creates it only when ssh_ca_kms_key_arn is empty. The key has prevent_destroy, so an existing deployment switching to ssh_ca_kms_key_arn must set true to keep it (the broker stops signing with it and its alias is removed); without that the plan fails rather than dropping the CA devices trust. To retire the old key once devices trust the new CA, terraform state rm it and schedule its deletion by hand (see the README)."
+  type        = bool
+  default     = null
+
+  validation {
+    condition     = var.create_ssh_ca_key != false || var.ssh_ca_kms_key_arn != ""
+    error_message = "create_ssh_ca_key = false requires ssh_ca_kms_key_arn; the broker needs a key to sign with."
+  }
+}
+
 # Broker tunables --------------------------------------------------------------
 
 variable "cert_ttl_operator" {

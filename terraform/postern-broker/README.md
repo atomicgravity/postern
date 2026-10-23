@@ -42,7 +42,7 @@ See [`examples/terraform/deployment/`](../../examples/terraform/deployment/) for
 
 ## What this creates
 
-- A KMS asymmetric Ed25519 signing key (the SSH CA), with an alias.
+- A KMS asymmetric Ed25519 signing key (the SSH CA), with an alias — unless `ssh_ca_kms_key_arn` supplies an existing key.
 - Two DynamoDB tables: device registry and per-engineer rate-limit, both PAY_PER_REQUEST.
 - An AVP policy store with the broker's Cedar schema, a permissive starter policy, and an identity source — **either Cognito or generic OIDC**, controlled by `avp_identity_source_type`.
 - A CloudWatch log group for broker audit events plus the fixed `ssh-cert-issued` log stream.
@@ -54,7 +54,7 @@ See [`examples/terraform/deployment/`](../../examples/terraform/deployment/) for
 ## Prereqs
 
 - Terraform `>= 1.9.0` (cross-variable validation + `terraform_data` are used).
-- AWS provider `>= 5.70.0` (configured at the caller; the module declares `required_providers` but no `provider` block).
+- AWS provider `>= 6.0` (configured at the caller; the module declares `required_providers` but no `provider` block).
 - An existing IdP (the module wires the broker to it, but does not provision it).
 - For the in-tree Lambda build: `make`, `go`, and `zip` on the apply machine. For pre-built artifacts, set `broker_lambda_zip_path` and skip the toolchain requirement.
 
@@ -75,6 +75,8 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `avp_cognito_group_entity_type` | When set (e.g. `"Postern::Group"`), AVP maps `cognito:groups` token claims to Cedar entities of this type — policies can use `principal in Postern::Group::"engineers"`. Requires `avp_schema_json` to declare the entity. Only meaningful when `avp_identity_source_type = "cognito"`. |
 | `avp_install_starter_policy` | `true` (default) creates the bundled permissive starter policy. Set to `false` to manage the full policy set yourself via `aws_verifiedpermissions_policy` resources in the caller. |
 | `avp_schema_json` | Cedar schema JSON to install on the policy store. Empty (default) uses the bundled schema. Override when policies need additional `Device` attributes (bool, Long, or extra String) — Cedar STRICT validation rejects policies referencing undeclared attributes. |
+| `ssh_ca_kms_key_arn` | Empty (default) signs with the module's own key. Set to an existing Ed25519 `SIGN_VERIFY` key's ARN (key ARN, not alias; in the deployment region) to share one CA across deployments; the broker's IAM grant and `POSTERN_SIGNER_KMS_KEY_ARN` point at it. **The broker signs with the new key from the apply that sets this:** push its public key to devices' `TrustedUserCAKeys` (and timefix-apply's pinned CA pubkey) first, or the fleet rejects every cert. **Cross-account key:** the key's own key policy must allow `kms:Sign` and `kms:GetPublicKey` for the broker Lambda role (`arn:aws:iam::<account>:role/<name_prefix>-broker-lambda`); the module can only grant the role's side. |
+| `create_ssh_ca_key` | Unset (default) creates the module's SSH CA key and alias only when `ssh_ca_kms_key_arn` is empty. The module key has `prevent_destroy`, so an existing deployment switching to `ssh_ca_kms_key_arn` must set `true` to keep it for rollback (no longer signing, alias removed) — otherwise the plan fails rather than dropping the CA devices trust. Retire it once devices trust the new CA by removing it from state and scheduling its deletion (see [Tearing down](#tearing-down)). |
 | `registry_backend` | `"dynamodb"` (default) provisions the device-registry table; `"http"` wires the broker to an external HTTP registry service via `registry_http_*` vars and skips the table. |
 | `registry_http_url` | URL of the operator's HTTP registry service. Required when `registry_backend = "http"`. See `docs/registry-http-api.md` for the endpoint contract. |
 | `registry_http_auth_mode` | `"none"` (default), `"bearer"`, or `"aws_sigv4"`. Bearer sends `Authorization: Bearer <token>`. SigV4 signs each request with the broker's Lambda IAM role for an API-Gateway-fronted registry — the Lambda role needs `execute-api:Invoke` attached separately via `broker_lambda_role_name`. |
@@ -100,7 +102,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 |---|---|
 | `broker_url` | URL engineers paste into `~/.postern/config.yaml` under `broker:`. Resolves to `https://<broker_domain_name>` when the custom-domain path is enabled, otherwise the API Gateway invoke URL. |
 | `broker_apigw_invoke_url` | Raw API Gateway invoke URL (diagnostics). |
-| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA. |
+| `ssh_ca_kms_key_arn` / `ssh_ca_kms_key_id` | KMS key identifying the SSH CA — the key the broker signs with: `ssh_ca_kms_key_arn` when set, otherwise the module's own. |
 | `ratelimit_table_name` | DynamoDB rate-limit table. |
 | `audit_log_group_name` | Audit log group. |
 | `apigw_access_log_group_name` | APIGW access log group (or `null` when the JWT authorizer is disabled). |
@@ -220,7 +222,7 @@ Operators that don't need the firewalled-device path leave `tunneling_enabled = 
 The broker's KMS-backed CA needs its public key on each device's `TrustedUserCAKeys`. Extract it with:
 
 ```sh
-KEY_ID=$(terraform output -raw ssh_ca_kms_key_id)
+KEY_ID=$(terraform output -raw ssh_ca_kms_key_arn)
 
 {
   printf '\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20'
@@ -230,7 +232,9 @@ KEY_ID=$(terraform output -raw ssh_ca_kms_key_id)
 } | base64 | tr -d '\n' | awk '{print "ssh-ed25519 " $0}'
 ```
 
-The pipeline prints `ssh-ed25519 AAAA...` ready for `/etc/ssh/trusted_user_ca_keys` on every device. Sanity-check the result with `echo "ssh-ed25519 AAAA..." | ssh-keygen -l -f -` — it should report a 256-bit ED25519 fingerprint.
+`terraform output` reports the key the broker signs with now. When preparing a switch to `ssh_ca_kms_key_arn`, set `KEY_ID` to the new key's ARN instead and add the result to devices alongside the current CA (`TrustedUserCAKeys` takes several keys) before the apply that moves the broker to it.
+
+For a key supplied via `ssh_ca_kms_key_arn` from another account, run this with credentials the key policy allows to call `GetPublicKey` (typically the key's own account). The pipeline prints `ssh-ed25519 AAAA...` ready for `/etc/ssh/trusted_user_ca_keys` on every device. Sanity-check the result with `echo "ssh-ed25519 AAAA..." | ssh-keygen -l -f -` — it should report a 256-bit ED25519 fingerprint.
 
 The manual byte-assembly is necessary because `aws kms get-public-key` returns DER-encoded SPKI but `ssh-keygen -i -m PKCS8` doesn't accept Ed25519 SPKI on macOS (the rest of the keytypes work; Ed25519's PKCS8 import path is missing). Ed25519's SPKI is a fixed 44-byte structure whose last 32 bytes are the raw public key, so the OpenSSH wire format is easy to assemble directly.
 
@@ -242,8 +246,15 @@ The manual byte-assembly is necessary because `aws kms get-public-key` returns D
 
 ## Tearing down
 
+The module's SSH CA key has `prevent_destroy`, so `terraform destroy` refuses to remove it. Take it out of state first, destroy the rest, then schedule its deletion yourself:
+
 ```sh
+KEY_ARN=$(terraform state show -no-color 'aws_kms_key.ssh_ca[0]' | awk '$1 == "arn" {print $3}' | tr -d '"')
+terraform state rm 'aws_kms_key.ssh_ca[0]'
 terraform destroy
+aws kms schedule-key-deletion --key-id "$KEY_ARN" --pending-window-in-days 30
 ```
 
-KMS keys enter a 30-day deletion window before final removal. The audit log group is removed with the rest of the stack — back up audit history elsewhere if you need it past `destroy`.
+From a calling configuration the address is `module.<name>.aws_kms_key.ssh_ca[0]`. The same `state rm` + `schedule-key-deletion` pair retires a key kept with `create_ssh_ca_key = true` once devices trust its replacement. A deployment that signs only with `ssh_ca_kms_key_arn` has no module key and destroys normally; the shared key is untouched.
+
+KMS keys enter a 30-day deletion window before final removal; `aws kms cancel-key-deletion` recovers one within it. The audit log group is removed with the rest of the stack — back up audit history elsewhere if you need it past `destroy`.

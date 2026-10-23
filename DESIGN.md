@@ -1109,7 +1109,7 @@ module "postern_broker" {
 
 Resources the module creates:
 
-- KMS asymmetric Ed25519 key (`ECC_NIST_EDWARDS25519`), signing-only, with an alias.
+- KMS asymmetric Ed25519 key (`ECC_NIST_EDWARDS25519`), signing-only, with an alias and protected from `terraform destroy` — or an operator-supplied existing key, so several deployments can share one CA.
 - DynamoDB tables for the default Registry backend and the rate limiter (PAY_PER_REQUEST).
 - CloudWatch log group for audit emission, with the fixed `ssh-cert-issued` log stream pre-created (the broker does not auto-create it).
 - AVP policy store with the broker's Cedar schema, a permissive baseline policy, and an identity source — Cognito or generic OIDC, selected by the `avp_identity_source_type` module variable. The starter Cedar files (schema + permissive policy) ship at `terraform/postern-broker/cedar/`, and the module README's "Authorization (Cedar)" section documents how operators add tighter policies (per-mode, per-fleet, source-IP-restricted) alongside or in place of the starter.

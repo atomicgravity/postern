@@ -1,6 +1,7 @@
-# Broker Lambda execution role. Permissions are scoped to the resources this
-# stack creates: the SSH CA key, the two DynamoDB tables, the AVP policy
-# store, and the audit log group's ssh-cert-issued stream.
+# Broker Lambda execution role. Permissions are scoped to the SSH CA key
+# (created here or supplied via ssh_ca_kms_key_arn) and the resources this
+# stack creates: the two DynamoDB tables, the AVP policy store, and the
+# audit log group's ssh-cert-issued stream.
 data "aws_iam_policy_document" "broker_lambda_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -31,7 +32,7 @@ data "aws_iam_policy_document" "broker_lambda_inline" {
     sid     = "SshCaSign"
     actions = ["kms:Sign", "kms:GetPublicKey"]
     resources = [
-      aws_kms_key.ssh_ca.arn,
+      local.ssh_ca_kms_key_arn,
     ]
   }
 
