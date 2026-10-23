@@ -433,7 +433,7 @@ variable "tunneling_target_from_registry" {
 }
 
 variable "tunneling_allowed_role_arns" {
-  description = "IAM role ARNs (exact, or `*` glob patterns such as `arn:aws:iam::*:role/postern-tunnel`) a device record may name as its `tunnel_role_arn`. Becomes both the broker's allowlist and the resource list of its `sts:AssumeRole` grant. Required (non-empty) when tunneling_target_from_registry = true; must be empty otherwise."
+  description = "IAM role ARNs (exact, or `*` glob patterns such as `arn:aws:iam::<account-id>:role/postern-*`; a `*` in the account field matches every AWS account) a device record may name as its `tunnel_role_arn`. Becomes both the broker's allowlist and the resource list of its `sts:AssumeRole` grant. Required (non-empty) when tunneling_target_from_registry = true; must be empty otherwise."
   type        = list(string)
   default     = []
 
