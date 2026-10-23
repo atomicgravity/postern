@@ -8,12 +8,16 @@
 #
 # Asymmetric keys do not support automatic rotation. The broker fetches the
 # public key once at startup, so rotation is an operator-driven event:
-# create a new key, update terraform.tfvars and reapply, then re-deploy
-# device TrustedUserCAKeys to include the new pubkey.
+# create a new key, add its pubkey to device TrustedUserCAKeys (and the
+# timefix-apply pinned CA pubkey) alongside the current one, then point
+# var.ssh_ca_kms_key_arn at it and reapply. That apply moves the broker to
+# the new key, so devices must trust it first.
 #
-# Setting var.ssh_ca_kms_key_arn moves the broker to that key on the same
-# apply, so devices must trust its pubkey first. This key then stays only for
-# rollback until create_ssh_ca_key = false.
+# prevent_destroy: devices trust this key's pubkey, and a destroyed key can't
+# be recreated with the same one. Any plan that drops it fails instead —
+# switching to var.ssh_ca_kms_key_arn without create_ssh_ca_key = true, or
+# terraform destroy. Retiring it is a deliberate out-of-band step (state rm,
+# then schedule-key-deletion); see the README.
 resource "aws_kms_key" "ssh_ca" {
   count = local.create_ssh_ca_key ? 1 : 0
 
@@ -23,6 +27,10 @@ resource "aws_kms_key" "ssh_ca" {
   deletion_window_in_days  = 30
   enable_key_rotation      = false
   tags                     = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # Only while this key is the signer: a retained rollback key under the

@@ -22,8 +22,10 @@ avp_cognito_client_ids    = ["REPLACE_CLI_CLIENT_ID"]
 # share one existing Ed25519 key across deployments; a key in another account
 # needs its key policy to allow kms:Sign + kms:GetPublicKey for
 # <name_prefix>-broker-lambda. The broker signs with it from that apply, so
-# devices must trust its pubkey first. An existing stack switching over can set
-# create_ssh_ca_key = true to keep its old key for rollback.
+# devices must trust its pubkey first. An existing stack switching over must
+# also set create_ssh_ca_key = true: the old key has prevent_destroy, so the
+# plan fails without it. Retire the old key later via the README.
+# create_ssh_ca_key = true
 # ssh_ca_kms_key_arn = "arn:aws:kms:us-west-2:111122223333:key/mrk-REPLACE"
 
 # Registry backend. "dynamodb" (default) provisions the device-registry table;

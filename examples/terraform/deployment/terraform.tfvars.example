@@ -38,6 +38,17 @@ avp_cognito_client_ids    = ["abc123clientid"]
 # route53_zone_name  = "example.com"
 # broker_domain_name = "postern-broker.example.com"
 
+# --- SSH CA key (optional) ----------------------------------------------------
+# Leave unset to sign with a key created in this stack. Set it to share one
+# existing Ed25519 key across deployments. The broker signs with it from that
+# apply, so put its pubkey in devices' TrustedUserCAKeys (alongside the current
+# CA) first. An existing stack switching over must also set
+# create_ssh_ca_key = true: the old key has prevent_destroy, so the plan fails
+# without it. See the module README to retire the old key later.
+
+# ssh_ca_kms_key_arn = "arn:aws:kms:us-west-2:123456789012:key/mrk-REPLACE"
+# create_ssh_ca_key  = true
+
 # --- Lambda packaging ---------------------------------------------------------
 # Leave empty to build at apply time (requires make / go / zip locally and
 # assumes you're applying from inside the Postern repo). For CI deploys with

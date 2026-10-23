@@ -223,7 +223,7 @@ variable "ssh_ca_kms_key_arn" {
 }
 
 variable "create_ssh_ca_key" {
-  description = "Create the module's own SSH CA key. Unset (default) creates it only when ssh_ca_kms_key_arn is empty. An existing deployment switching to ssh_ca_kms_key_arn sets true to keep its old key for rollback (the broker no longer signs with it, and its alias is removed); setting it false later schedules that key for deletion (30-day window)."
+  description = "Create the module's own SSH CA key. Unset (default) creates it only when ssh_ca_kms_key_arn is empty. The key has prevent_destroy, so an existing deployment switching to ssh_ca_kms_key_arn must set true to keep it (the broker stops signing with it and its alias is removed); without that the plan fails rather than dropping the CA devices trust. To retire the old key once devices trust the new CA, terraform state rm it and schedule its deletion by hand (see the README)."
   type        = bool
   default     = null
 

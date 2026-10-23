@@ -105,13 +105,13 @@ variable "registry_backend" {
 }
 
 variable "ssh_ca_kms_key_arn" {
-  description = "Existing SSH CA key ARN to sign with, shared across deployments. Empty = the module's own key."
+  description = "Existing SSH CA key ARN to sign with, shared across deployments. Empty = the module's own key. The broker switches on the apply that sets it, so devices must trust its pubkey first."
   type        = string
   default     = ""
 }
 
 variable "create_ssh_ca_key" {
-  description = "Create the module's own SSH CA key. Unset = only when ssh_ca_kms_key_arn is empty; true keeps it for rollback after switching."
+  description = "Create the module's own SSH CA key. Unset = only when ssh_ca_kms_key_arn is empty. An existing stack switching to ssh_ca_kms_key_arn must set true (the key has prevent_destroy)."
   type        = bool
   default     = null
 }

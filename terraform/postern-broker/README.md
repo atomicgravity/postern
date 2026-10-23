@@ -76,7 +76,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `avp_install_starter_policy` | `true` (default) creates the bundled permissive starter policy. Set to `false` to manage the full policy set yourself via `aws_verifiedpermissions_policy` resources in the caller. |
 | `avp_schema_json` | Cedar schema JSON to install on the policy store. Empty (default) uses the bundled schema. Override when policies need additional `Device` attributes (bool, Long, or extra String) — Cedar STRICT validation rejects policies referencing undeclared attributes. |
 | `ssh_ca_kms_key_arn` | Empty (default) signs with the module's own key. Set to an existing Ed25519 `SIGN_VERIFY` key's ARN (key ARN, not alias; in the deployment region) to share one CA across deployments; the broker's IAM grant and `POSTERN_SIGNER_KMS_KEY_ARN` point at it. **The broker signs with the new key from the apply that sets this:** push its public key to devices' `TrustedUserCAKeys` (and timefix-apply's pinned CA pubkey) first, or the fleet rejects every cert. **Cross-account key:** the key's own key policy must allow `kms:Sign` and `kms:GetPublicKey` for the broker Lambda role (`arn:aws:iam::<account>:role/<name_prefix>-broker-lambda`); the module can only grant the role's side. |
-| `create_ssh_ca_key` | Unset (default) creates the module's SSH CA key and alias only when `ssh_ca_kms_key_arn` is empty. An existing deployment switching to `ssh_ca_kms_key_arn` sets `true` to keep its old key for rollback (no longer signing, alias removed); setting `false` later schedules it for deletion (30-day window). |
+| `create_ssh_ca_key` | Unset (default) creates the module's SSH CA key and alias only when `ssh_ca_kms_key_arn` is empty. The module key has `prevent_destroy`, so an existing deployment switching to `ssh_ca_kms_key_arn` must set `true` to keep it for rollback (no longer signing, alias removed) — otherwise the plan fails rather than dropping the CA devices trust. Retire it once devices trust the new CA by removing it from state and scheduling its deletion (see [Tearing down](#tearing-down)). |
 | `registry_backend` | `"dynamodb"` (default) provisions the device-registry table; `"http"` wires the broker to an external HTTP registry service via `registry_http_*` vars and skips the table. |
 | `registry_http_url` | URL of the operator's HTTP registry service. Required when `registry_backend = "http"`. See `docs/registry-http-api.md` for the endpoint contract. |
 | `registry_http_auth_mode` | `"none"` (default), `"bearer"`, or `"aws_sigv4"`. Bearer sends `Authorization: Bearer <token>`. SigV4 signs each request with the broker's Lambda IAM role for an API-Gateway-fronted registry — the Lambda role needs `execute-api:Invoke` attached separately via `broker_lambda_role_name`. |
@@ -232,6 +232,8 @@ KEY_ID=$(terraform output -raw ssh_ca_kms_key_arn)
 } | base64 | tr -d '\n' | awk '{print "ssh-ed25519 " $0}'
 ```
 
+`terraform output` reports the key the broker signs with now. When preparing a switch to `ssh_ca_kms_key_arn`, set `KEY_ID` to the new key's ARN instead and add the result to devices alongside the current CA (`TrustedUserCAKeys` takes several keys) before the apply that moves the broker to it.
+
 For a key supplied via `ssh_ca_kms_key_arn` from another account, run this with credentials the key policy allows to call `GetPublicKey` (typically the key's own account). The pipeline prints `ssh-ed25519 AAAA...` ready for `/etc/ssh/trusted_user_ca_keys` on every device. Sanity-check the result with `echo "ssh-ed25519 AAAA..." | ssh-keygen -l -f -` — it should report a 256-bit ED25519 fingerprint.
 
 The manual byte-assembly is necessary because `aws kms get-public-key` returns DER-encoded SPKI but `ssh-keygen -i -m PKCS8` doesn't accept Ed25519 SPKI on macOS (the rest of the keytypes work; Ed25519's PKCS8 import path is missing). Ed25519's SPKI is a fixed 44-byte structure whose last 32 bytes are the raw public key, so the OpenSSH wire format is easy to assemble directly.
@@ -244,8 +246,15 @@ The manual byte-assembly is necessary because `aws kms get-public-key` returns D
 
 ## Tearing down
 
+The module's SSH CA key has `prevent_destroy`, so `terraform destroy` refuses to remove it. Take it out of state first, destroy the rest, then schedule its deletion yourself:
+
 ```sh
+KEY_ARN=$(terraform state show -no-color 'aws_kms_key.ssh_ca[0]' | awk '$1 == "arn" {print $3}' | tr -d '"')
+terraform state rm 'aws_kms_key.ssh_ca[0]'
 terraform destroy
+aws kms schedule-key-deletion --key-id "$KEY_ARN" --pending-window-in-days 30
 ```
 
-KMS keys enter a 30-day deletion window before final removal. The audit log group is removed with the rest of the stack — back up audit history elsewhere if you need it past `destroy`.
+From a calling configuration the address is `module.<name>.aws_kms_key.ssh_ca[0]`. The same `state rm` + `schedule-key-deletion` pair retires a key kept with `create_ssh_ca_key = true` once devices trust its replacement. A deployment that signs only with `ssh_ca_kms_key_arn` has no module key and destroys normally; the shared key is untouched.
+
+KMS keys enter a 30-day deletion window before final removal; `aws kms cancel-key-deletion` recovers one within it. The audit log group is removed with the rest of the stack — back up audit history elsewhere if you need it past `destroy`.
