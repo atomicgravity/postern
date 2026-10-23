@@ -49,23 +49,47 @@ resource "aws_cloudwatch_log_resource_policy" "apigw_access" {
   resource_arn = aws_cloudwatch_log_group.apigw_access[0].arn
   policy_document = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "APIGatewayAccessLogs"
-      Effect = "Allow"
-      Principal = {
-        Service = "apigateway.amazonaws.com"
-      }
-      Action = [
-        "logs:CreateLogStream",
-        "logs:PutLogEvents",
-      ]
-      Resource = "${aws_cloudwatch_log_group.apigw_access[0].arn}:*"
-      Condition = {
-        StringEquals = {
-          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
-          "aws:SourceArn"     = "${aws_apigatewayv2_api.broker.execution_arn}/*"
+    Statement = [
+      {
+        Sid    = "APIGatewayAccessLogs"
+        Effect = "Allow"
+        Principal = {
+          Service = "apigateway.amazonaws.com"
         }
-      }
-    }]
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "${aws_cloudwatch_log_group.apigw_access[0].arn}:*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+            "aws:SourceArn"     = "${aws_apigatewayv2_api.broker.execution_arn}/*"
+          }
+        }
+      },
+      # AWS appends this statement the first time API Gateway delivers access logs.
+      # Declaring it keeps plans clean and stops an apply from removing it.
+      {
+        Sid    = "AWSLogDeliveryWrite1"
+        Effect = "Allow"
+        Principal = {
+          Service = "delivery.logs.amazonaws.com"
+        }
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ]
+        Resource = "${aws_cloudwatch_log_group.apigw_access[0].arn}:log-stream:*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
+      },
+    ]
   })
 }

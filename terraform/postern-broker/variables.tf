@@ -388,6 +388,9 @@ variable "apigw_jwt_additional_audiences" {
 #    when the engineer omits --max-lifetime. Defaults to 480 (8 hours,
 #    a full engineer workday); AWS caps individual tunnels at 720 (12
 #    hours).
+#  - tunneling_target_from_registry + tunneling_allowed_role_arns open
+#    each tunnel in the device's own account/region (from its Registry
+#    record) by assuming an allowlisted role there.
 
 variable "tunneling_enabled" {
   description = "When true, the broker is wired for the firewalled-device path: IAM grant for iot:OpenTunnel + Lambda env vars for the tunneling backend region/default-TTL. The /ssh/tunnel handler returns 501 when this is false. Opt-in because the AWS IoT Secure Tunneling control plane is operator-paid and not all deployments need the firewalled-device recovery path."
@@ -420,5 +423,28 @@ variable "tunneling_thing_name_format" {
   validation {
     condition     = length(regexall("\\{serial\\}", var.tunneling_thing_name_format)) == 1
     error_message = "tunneling_thing_name_format must contain exactly one {serial} placeholder."
+  }
+}
+
+variable "tunneling_target_from_registry" {
+  description = "When true, the broker opens each tunnel in the account and region the device's Registry record names: it assumes the record's `tunnel_role_arn` and calls AWS IoT Secure Tunneling in its `tunnel_region`. Devices without both attributes are denied (`tunnel_target_missing`); there is no fallback to the broker's own account. The broker role gets `sts:AssumeRole` on `tunneling_allowed_role_arns` instead of `iot:OpenTunnel`. Only consulted when tunneling_enabled = true."
+  type        = bool
+  default     = false
+}
+
+variable "tunneling_allowed_role_arns" {
+  description = "IAM role ARNs a device record may name as its `tunnel_role_arn`: exact, or with `*` wildcards in the role name only, such as `arn:aws:iam::<account-id>:role/postern-*`. The account ID must be concrete, and `,` and `?` aren't allowed. Becomes both the broker's allowlist and the resource list of its `sts:AssumeRole` grant. Required (non-empty) when tunneling_target_from_registry = true; must be empty otherwise."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = var.tunneling_target_from_registry ? length(var.tunneling_allowed_role_arns) > 0 : length(var.tunneling_allowed_role_arns) == 0
+    error_message = "tunneling_allowed_role_arns must be non-empty when tunneling_target_from_registry = true, and empty otherwise."
+  }
+
+  validation {
+    # Mirrors the broker's own check, so a bad entry fails at plan, not at Lambda start.
+    condition     = alltrue([for arn in var.tunneling_allowed_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=.@_/*-]+$", arn))])
+    error_message = "tunneling_allowed_role_arns entries must be arn:aws:iam::<12-digit account>:role/<name> ARNs; `*` is allowed only in the role name, and `,` and `?` are not allowed."
   }
 }

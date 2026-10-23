@@ -162,6 +162,8 @@ postern tunnel widget-042                      # hold-open; use ssh widget-042.t
 
 All three commands accept `--max-lifetime <duration>` (Go duration string; capped at 12h per the AWS IoT ceiling). `postern tunnel` also accepts `--port-only` (skip the ssh.conf integration; print the loopback port and hold open).
 
+By default the broker opens tunnels in its own AWS account and `tunneling.iot_region`. With `tunneling.target_from_registry: true`, one broker serves devices in other accounts and regions: it assumes the IAM role named by the device record's `tunnel_role_arn` (which must match `tunneling.allowed_role_arns`) and opens the tunnel in the record's `tunnel_region`. A device without a target is denied (`tunnel_target_missing`) rather than tunneled through the broker's own account. Setup and deny reasons: [`terraform/postern-broker/README.md`](terraform/postern-broker/README.md) ("Tunnels in the device's account").
+
 ### Broken clocks
 
 If a device's clock is too far off to validate a normal cert, repair it first:

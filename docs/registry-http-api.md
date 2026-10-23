@@ -60,6 +60,8 @@ Return JSON:
 
 **Cedar schema reminder.** The broker's AVP policy store runs in STRICT validation mode: policies that reference an attribute the schema doesn't declare fail to compile. If you start emitting a bool or integer attribute the policy needs to read, extend the policy store's Cedar schema (`Device` entity shape) to declare it — the broker's terraform module exposes an `avp_schema_json` variable for that purpose.
 
+**Tunnel target attributes.** When the broker runs with `tunneling.target_from_registry`, it reads two string attributes to decide where `/ssh/tunnel` opens: `tunnel_role_arn` (the IAM role it assumes) and `tunnel_region` (the AWS region). Return both for every tunnel-reachable device; a device with neither is denied a tunnel, and one with only one of them is treated as misconfigured.
+
 Notes:
 - `serial` is the only field the broker strictly needs. Everything else is optional.
 - Return the same `serial` regardless of which identifier the engineer typed. If `prod-a012` and `1424223030014` both refer to the same physical device, your service must resolve both lookups to the same `serial`.

@@ -65,6 +65,9 @@ var (
 	ErrListenAddrRequired                 = errors.New("listen.addr is required")
 	ErrTrustedProxyInvalid                = errors.New("trusted_proxies entry is not a valid CIDR")
 	ErrTunnelingThingNameFormatInvalid    = errors.New("tunneling.thing_name_format must contain exactly one {serial} placeholder")
+	ErrTunnelingAllowedRoleARNsRequired   = errors.New("tunneling.allowed_role_arns must be non-empty when tunneling.target_from_registry is true")
+	ErrTunnelingAllowedRoleARNsUnexpected = errors.New("tunneling.allowed_role_arns is only valid when tunneling.target_from_registry is true")
+	ErrTunnelingAllowedRoleARNInvalid     = errors.New("tunneling.allowed_role_arns entry must be an arn:aws:iam::<12-digit account>:role/<name> ARN; `*` is allowed only in the role name, and `,` and `?` are not allowed")
 )
 
 // DefaultTunnelingThingNameFormat is the fallback when
@@ -240,10 +243,18 @@ type AuditConfig struct {
 // endpoint. DefaultMaxLifetimeMinutes is the engineer-omits-flag fallback,
 // capped at 720 (12h AWS ceiling). ThingNameFormat must contain exactly one
 // "{serial}" placeholder; empty resolves to "device-{serial}".
+//
+// TargetFromRegistry opens each tunnel where the device record says: the
+// broker assumes the record's tunnel_role_arn and calls the tunneling API in
+// its tunnel_region, which also flows back to the CLI. IOTRegion is unused in
+// that mode. AllowedRoleARNs (exact ARNs or `*` globs) bounds the roles a
+// record may name; it must be non-empty when TargetFromRegistry is set.
 type TunnelingConfig struct {
-	IOTRegion                 string `yaml:"iot_region"`
-	DefaultMaxLifetimeMinutes int32  `yaml:"default_max_lifetime_minutes,omitempty"`
-	ThingNameFormat           string `yaml:"thing_name_format,omitempty"`
+	IOTRegion                 string   `yaml:"iot_region"`
+	DefaultMaxLifetimeMinutes int32    `yaml:"default_max_lifetime_minutes,omitempty"`
+	ThingNameFormat           string   `yaml:"thing_name_format,omitempty"`
+	TargetFromRegistry        bool     `yaml:"target_from_registry,omitempty"`
+	AllowedRoleARNs           []string `yaml:"allowed_role_arns,omitempty"`
 }
 
 type PolicyConfig struct {
@@ -339,6 +350,9 @@ func trimConfig(config *Config) {
 	if config.Tunneling != nil {
 		config.Tunneling.IOTRegion = strings.TrimSpace(config.Tunneling.IOTRegion)
 		config.Tunneling.ThingNameFormat = strings.TrimSpace(config.Tunneling.ThingNameFormat)
+		for index, entry := range config.Tunneling.AllowedRoleARNs {
+			config.Tunneling.AllowedRoleARNs[index] = strings.TrimSpace(entry)
+		}
 	}
 }
 
@@ -564,7 +578,35 @@ func (c *Config) Validate() error {
 			))
 		}
 	}
+	if c.Tunneling != nil {
+		errs = append(errs, validateTunnelingTarget(c.Tunneling)...)
+	}
 	return errors.Join(errs...)
+}
+
+// validateTunnelingTarget checks the registry-targeting pair: the allowlist
+// is required with the flag and rejected without it, so a forgotten flag
+// can't leave an operator believing tunnels are cross-account.
+func validateTunnelingTarget(tunneling *TunnelingConfig) []error {
+	if !tunneling.TargetFromRegistry {
+		if len(tunneling.AllowedRoleARNs) > 0 {
+			return []error{ErrTunnelingAllowedRoleARNsUnexpected}
+		}
+		return nil
+	}
+	if len(tunneling.AllowedRoleARNs) == 0 {
+		return []error{ErrTunnelingAllowedRoleARNsRequired}
+	}
+	var errs []error
+	for index, entry := range tunneling.AllowedRoleARNs {
+		if !broker.ValidAllowedRoleARN(entry) {
+			errs = append(errs, errors.Join(
+				ErrTunnelingAllowedRoleARNInvalid,
+				fmt.Errorf("tunneling.allowed_role_arns[%d] %q", index, entry),
+			))
+		}
+	}
+	return errs
 }
 
 // ParsedTrustedProxies returns the configured CIDRs as []net.IPNet. Validate
@@ -639,6 +681,12 @@ func markFileSources(config Config, source string, sources map[string]string) {
 			sources["tunneling.default_max_lifetime_minutes"] = source
 		}
 		markSource(sources, "tunneling.thing_name_format", config.Tunneling.ThingNameFormat, source)
+		if config.Tunneling.TargetFromRegistry {
+			sources["tunneling.target_from_registry"] = source
+		}
+		if len(config.Tunneling.AllowedRoleARNs) > 0 {
+			sources["tunneling.allowed_role_arns"] = source
+		}
 	}
 	markSource(sources, "policy.avp_policy_store_id", config.Policy.AVPPolicyStoreID, source)
 	if config.CertTTL.Operator != 0 {
@@ -686,6 +734,10 @@ func applyEnvOverrides(config *Config, lookupEnv func(string) (string, bool), so
 		return err
 	}
 	setTunnelingThingNameFormatFromEnv(config, lookupEnv, sources)
+	if err := setTunnelingTargetFromRegistryFromEnv(config, lookupEnv, sources); err != nil {
+		return err
+	}
+	setTunnelingAllowedRoleARNsFromEnv(config, lookupEnv, sources)
 	setStringFromEnv(&config.Policy.AVPPolicyStoreID, "POSTERN_POLICY_AVP_POLICY_STORE_ID", lookupEnv, sources, "policy.avp_policy_store_id")
 	if err := setDurationFromEnv(&config.CertTTL.Operator, "POSTERN_CERT_TTL_OPERATOR", lookupEnv, sources, "cert_ttl.operator"); err != nil {
 		return err
@@ -759,6 +811,45 @@ func setTunnelingThingNameFormatFromEnv(config *Config, lookupEnv func(string) (
 			sources["tunneling.thing_name_format"] = "POSTERN_TUNNELING_THING_NAME_FORMAT"
 		}
 	}
+}
+
+// setTunnelingTargetFromRegistryFromEnv lazy-allocates TunnelingConfig when
+// the env var is set but the section was absent from the file. Turning the
+// flag off also clears a file-provided allowlist, which is meaningless
+// without it, so the override alone falls back to the broker's own account.
+func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) error {
+	value, ok := lookupTrimmedEnv("POSTERN_TUNNELING_TARGET_FROM_REGISTRY", lookupEnv)
+	if !ok {
+		return nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("POSTERN_TUNNELING_TARGET_FROM_REGISTRY=%q: invalid boolean: %w", value, err)
+	}
+	if config.Tunneling == nil {
+		config.Tunneling = &TunnelingConfig{}
+	}
+	config.Tunneling.TargetFromRegistry = parsed
+	sources["tunneling.target_from_registry"] = "POSTERN_TUNNELING_TARGET_FROM_REGISTRY"
+	if !parsed {
+		config.Tunneling.AllowedRoleARNs = nil
+		delete(sources, "tunneling.allowed_role_arns")
+	}
+	return nil
+}
+
+// setTunnelingAllowedRoleARNsFromEnv takes a comma-separated list and
+// lazy-allocates TunnelingConfig like the other tunneling overrides.
+func setTunnelingAllowedRoleARNsFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) {
+	var parsed []string
+	setStringSliceFromEnv(&parsed, "POSTERN_TUNNELING_ALLOWED_ROLE_ARNS", lookupEnv, sources, "tunneling.allowed_role_arns")
+	if len(parsed) == 0 {
+		return
+	}
+	if config.Tunneling == nil {
+		config.Tunneling = &TunnelingConfig{}
+	}
+	config.Tunneling.AllowedRoleARNs = parsed
 }
 
 // setTunnelingMaxLifetimeFromEnv lazy-allocates TunnelingConfig when the
