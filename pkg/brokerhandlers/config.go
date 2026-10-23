@@ -734,10 +734,13 @@ func applyEnvOverrides(config *Config, lookupEnv func(string) (string, bool), so
 		return err
 	}
 	setTunnelingThingNameFormatFromEnv(config, lookupEnv, sources)
-	if err := setTunnelingTargetFromRegistryFromEnv(config, lookupEnv, sources); err != nil {
+	targetDisabled, err := setTunnelingTargetFromRegistryFromEnv(config, lookupEnv, sources)
+	if err != nil {
 		return err
 	}
-	setTunnelingAllowedRoleARNsFromEnv(config, lookupEnv, sources)
+	if !targetDisabled {
+		setTunnelingAllowedRoleARNsFromEnv(config, lookupEnv, sources)
+	}
 	setStringFromEnv(&config.Policy.AVPPolicyStoreID, "POSTERN_POLICY_AVP_POLICY_STORE_ID", lookupEnv, sources, "policy.avp_policy_store_id")
 	if err := setDurationFromEnv(&config.CertTTL.Operator, "POSTERN_CERT_TTL_OPERATOR", lookupEnv, sources, "cert_ttl.operator"); err != nil {
 		return err
@@ -816,15 +819,16 @@ func setTunnelingThingNameFormatFromEnv(config *Config, lookupEnv func(string) (
 // setTunnelingTargetFromRegistryFromEnv lazy-allocates TunnelingConfig when
 // the env var is set but the section was absent from the file. Turning the
 // flag off also clears a file-provided allowlist, which is meaningless
-// without it, so the override alone falls back to the broker's own account.
-func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) error {
+// without it, and reports disabled so the caller skips the allowlist env
+// var too: the override alone falls back to the broker's own account.
+func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) (disabled bool, err error) {
 	value, ok := lookupTrimmedEnv("POSTERN_TUNNELING_TARGET_FROM_REGISTRY", lookupEnv)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return fmt.Errorf("POSTERN_TUNNELING_TARGET_FROM_REGISTRY=%q: invalid boolean: %w", value, err)
+		return false, fmt.Errorf("POSTERN_TUNNELING_TARGET_FROM_REGISTRY=%q: invalid boolean: %w", value, err)
 	}
 	if config.Tunneling == nil {
 		config.Tunneling = &TunnelingConfig{}
@@ -835,7 +839,7 @@ func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string
 		config.Tunneling.AllowedRoleARNs = nil
 		delete(sources, "tunneling.allowed_role_arns")
 	}
-	return nil
+	return !parsed, nil
 }
 
 // setTunnelingAllowedRoleARNsFromEnv takes a comma-separated list and

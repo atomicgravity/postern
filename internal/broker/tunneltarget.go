@@ -31,6 +31,10 @@ var (
 	allowedRoleARNPattern = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=.@_/*-]+$`)
 )
 
+// maxAuditTargetRunes caps unvalidated record values on a denial's audit
+// row; IAM role ARNs top out at 2048 characters.
+const maxAuditTargetRunes = 2048
+
 // Region prefixes of partitions other than aws; see tunnelRoleARNPattern.
 var nonCommercialRegionPrefixes = []string{"cn-", "us-gov-", "us-iso", "eusc-"}
 
@@ -57,8 +61,10 @@ func validTunnelRegion(region string) bool {
 
 // tunnelTargetDenial is a registry-targeting rejection: the audit reason,
 // the engineer-facing error, and the operator-facing detail for the log.
-// target is set only for a well-formed target the allowlist rejected, so the
-// audit row can record what the record asked for.
+// target is what the record asked for, set for an invalid or unlisted
+// target so the audit row can record it; values that aren't strings stay
+// empty, and the rest are capped at maxAuditTargetRunes since they haven't
+// passed validation.
 type tunnelTargetDenial struct {
 	reason string
 	err    error
@@ -73,11 +79,16 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 	roleARN, hasRole, roleIsString := tunnelTargetAttribute(device.Attributes, TunnelRoleARNAttribute)
 	region, hasRegion, regionIsString := tunnelTargetAttribute(device.Attributes, TunnelRegionAttribute)
 
+	attempted := &TunnelTarget{
+		RoleARN: TruncateRunes(roleARN, maxAuditTargetRunes),
+		Region:  TruncateRunes(region, maxAuditTargetRunes),
+	}
 	invalid := func(detail string) *tunnelTargetDenial {
 		return &tunnelTargetDenial{
 			reason: DenyReasonTunnelTargetInvalid,
 			err:    Error{StatusCode: http.StatusInternalServerError, Message: "device tunnel target is invalid; contact your operator"},
 			detail: detail,
+			target: attempted,
 		}
 	}
 
@@ -107,7 +118,7 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 			reason: DenyReasonTunnelRoleNotAllowed,
 			err:    Error{StatusCode: http.StatusForbidden, Message: "device tunnel target role is not allowed by this broker"},
 			detail: fmt.Sprintf("%s %q matches no allowed role ARN", TunnelRoleARNAttribute, roleARN),
-			target: &TunnelTarget{RoleARN: roleARN, Region: region},
+			target: attempted,
 		}
 	}
 

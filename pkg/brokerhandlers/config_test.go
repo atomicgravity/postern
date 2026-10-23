@@ -1499,6 +1499,29 @@ tunneling:
 	}
 }
 
+// TestLoadResolvedConfigTunnelingTargetEnvOffIgnoresEnvAllowlist locks the
+// same fallback when the allowlist also comes from its env var.
+func TestLoadResolvedConfigTunnelingTargetEnvOffIgnoresEnvAllowlist(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML+`
+tunneling:
+  iot_region: us-west-2
+`)
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{
+		Path: configPath,
+		LookupEnv: mapEnv(map[string]string{
+			"POSTERN_TUNNELING_TARGET_FROM_REGISTRY": "false",
+			"POSTERN_TUNNELING_ALLOWED_ROLE_ARNS":    "arn:aws:iam::111122223333:role/postern-tunnel",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	if got := resolved.Config.Tunneling.AllowedRoleARNs; len(got) != 0 {
+		t.Fatalf("allowed_role_arns = %q, want none", got)
+	}
+}
+
 func TestLoadResolvedConfigTunnelingTargetFromEnvInvalidBool(t *testing.T) {
 	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML)
 	_, err := LoadResolvedConfig(LoadConfigOptions{

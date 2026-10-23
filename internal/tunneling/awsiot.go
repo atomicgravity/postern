@@ -241,8 +241,9 @@ func classifyError(err error, targeted bool) error {
 	return wrap(broker.TunnelingErrorUnknown, err)
 }
 
-// accessDenied reports an AssumeRole rejection (trust policy, disabled STS
-// region) or an OpenTunnel AccessDeniedException in the target account.
+// accessDenied reports an AssumeRole rejection (trust policy, or STS not
+// activated for the target account in the broker's region) or an
+// OpenTunnel AccessDeniedException in the target account.
 func accessDenied(err error) bool {
 	var apiErr smithy.APIError
 	if !errors.As(err, &apiErr) {

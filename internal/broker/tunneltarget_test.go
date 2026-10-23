@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -120,8 +121,8 @@ func TestTunnelIssuerTargetOffIgnoresAttributes(t *testing.T) {
 
 // TestTunnelIssuerTargetDenials locks each registry-targeting rejection: a
 // stable denied_reason, one tunnel_denied row carrying the device serial
-// (and, for an unlisted role, the target the record asked for), and no
-// backend call.
+// (and, for an invalid or unlisted target, the values the record held), and
+// no backend call.
 func TestTunnelIssuerTargetDenials(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -129,6 +130,7 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 		wantReason string
 		wantStatus int
 		wantRole   string
+		wantRegion string
 	}{
 		{
 			name:       "no attributes",
@@ -147,30 +149,37 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 			attributes: map[string]any{TunnelRegionAttribute: testTunnelRegion},
 			wantReason: DenyReasonTunnelTargetInvalid,
 			wantStatus: http.StatusInternalServerError,
+			wantRegion: testTunnelRegion,
 		},
 		{
 			name:       "role only",
 			attributes: map[string]any{TunnelRoleARNAttribute: testTunnelRoleARN},
 			wantReason: DenyReasonTunnelTargetInvalid,
 			wantStatus: http.StatusInternalServerError,
+			wantRole:   testTunnelRoleARN,
 		},
 		{
 			name:       "non-string role",
 			attributes: map[string]any{TunnelRoleARNAttribute: int64(7), TunnelRegionAttribute: testTunnelRegion},
 			wantReason: DenyReasonTunnelTargetInvalid,
 			wantStatus: http.StatusInternalServerError,
+			wantRegion: testTunnelRegion,
 		},
 		{
 			name:       "malformed role ARN",
 			attributes: map[string]any{TunnelRoleARNAttribute: "arn:aws:iam::1234:user/bob", TunnelRegionAttribute: testTunnelRegion},
 			wantReason: DenyReasonTunnelTargetInvalid,
 			wantStatus: http.StatusInternalServerError,
+			wantRole:   "arn:aws:iam::1234:user/bob",
+			wantRegion: testTunnelRegion,
 		},
 		{
 			name:       "malformed region",
 			attributes: map[string]any{TunnelRoleARNAttribute: testTunnelRoleARN, TunnelRegionAttribute: "Europe"},
 			wantReason: DenyReasonTunnelTargetInvalid,
 			wantStatus: http.StatusInternalServerError,
+			wantRole:   testTunnelRoleARN,
+			wantRegion: "Europe",
 		},
 		{
 			name:       "role not allowed",
@@ -178,6 +187,15 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 			wantReason: DenyReasonTunnelRoleNotAllowed,
 			wantStatus: http.StatusForbidden,
 			wantRole:   "arn:aws:iam::999988887777:role/other",
+			wantRegion: testTunnelRegion,
+		},
+		{
+			name:       "oversized role ARN is capped on the audit row",
+			attributes: map[string]any{TunnelRoleARNAttribute: strings.Repeat("x", maxAuditTargetRunes+10), TunnelRegionAttribute: testTunnelRegion},
+			wantReason: DenyReasonTunnelTargetInvalid,
+			wantStatus: http.StatusInternalServerError,
+			wantRole:   strings.Repeat("x", maxAuditTargetRunes),
+			wantRegion: testTunnelRegion,
 		},
 	}
 
@@ -216,12 +234,8 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 			if got, want := event.EngineerSub, "sub-123"; got != want {
 				t.Fatalf("engineer_sub = %q, want %q", got, want)
 			}
-			wantRegion := ""
-			if tc.wantRole != "" {
-				wantRegion = testTunnelRegion
-			}
-			if event.TunnelRoleARN != tc.wantRole || event.TunnelRegion != wantRegion {
-				t.Fatalf("audit target = (%q, %q), want (%q, %q)", event.TunnelRoleARN, event.TunnelRegion, tc.wantRole, wantRegion)
+			if event.TunnelRoleARN != tc.wantRole || event.TunnelRegion != tc.wantRegion {
+				t.Fatalf("audit target = (%.40q, %q), want (%.40q, %q)", event.TunnelRoleARN, event.TunnelRegion, tc.wantRole, tc.wantRegion)
 			}
 		})
 	}
