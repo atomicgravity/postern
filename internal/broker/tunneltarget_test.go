@@ -59,6 +59,35 @@ func TestTunnelIssuerTargetFromRegistryPassesTarget(t *testing.T) {
 	if got, want := len(audit.events), 2; got != want {
 		t.Fatalf("audit events = %d, want %d", got, want)
 	}
+	for _, event := range audit.events {
+		if event.TunnelRoleARN != testTunnelRoleARN || event.TunnelRegion != testTunnelRegion {
+			t.Fatalf("%s audit target = (%q, %q), want (%q, %q)", event.Event, event.TunnelRoleARN, event.TunnelRegion, testTunnelRoleARN, testTunnelRegion)
+		}
+	}
+}
+
+// TestTunnelIssuerTargetBackendFailureAuditsTarget locks the AWS-failure
+// row: the target account refused or failed, and the deny row says which.
+func TestTunnelIssuerTargetBackendFailureAuditsTarget(t *testing.T) {
+	deps := newTunnelTestDeps(t)
+	deps.Registry = &recordingRegistry{device: targetDevice(map[string]any{
+		TunnelRoleARNAttribute: testTunnelRoleARN,
+		TunnelRegionAttribute:  testTunnelRegion,
+	})}
+	audit := deps.Audit.(*recordingAudit)
+	tun := &recordingTunneling{err: classifiedTunnelingErr{kind: TunnelingErrorTargetAccessDenied, msg: "AccessDenied"}}
+	issuer := newTargetTunnelIssuer(t, deps, tun, []string{testTunnelRoleARN})
+
+	if _, err := issuer.OpenTunnel(context.Background(), TunnelOpenRequest{AccessToken: "token", DeviceID: "prod-a012"}); err == nil {
+		t.Fatal("OpenTunnel() error = nil, want backend failure")
+	}
+	denied := audit.events[len(audit.events)-1]
+	if denied.Event != EventTunnelDenied || denied.DeniedReason != DenyReasonTunnelTargetAccessDenied {
+		t.Fatalf("last audit event = %q/%q, want %q/%q", denied.Event, denied.DeniedReason, EventTunnelDenied, DenyReasonTunnelTargetAccessDenied)
+	}
+	if denied.TunnelRoleARN != testTunnelRoleARN || denied.TunnelRegion != testTunnelRegion {
+		t.Fatalf("denied audit target = (%q, %q), want (%q, %q)", denied.TunnelRoleARN, denied.TunnelRegion, testTunnelRoleARN, testTunnelRegion)
+	}
 }
 
 // TestTunnelIssuerTargetOffIgnoresAttributes locks off-mode: target
@@ -82,17 +111,24 @@ func TestTunnelIssuerTargetOffIgnoresAttributes(t *testing.T) {
 	if got, want := response.Region, "us-west-2"; got != want {
 		t.Fatalf("Region = %q, want %q", got, want)
 	}
+	for _, event := range deps.Audit.(*recordingAudit).events {
+		if event.TunnelRoleARN != "" || event.TunnelRegion != "" {
+			t.Fatalf("%s audit target = (%q, %q), want none in off-mode", event.Event, event.TunnelRoleARN, event.TunnelRegion)
+		}
+	}
 }
 
 // TestTunnelIssuerTargetDenials locks each registry-targeting rejection: a
-// stable denied_reason, one tunnel_denied row carrying the device serial,
-// and no backend call.
+// stable denied_reason, one tunnel_denied row carrying the device serial
+// (and, for an unlisted role, the target the record asked for), and no
+// backend call.
 func TestTunnelIssuerTargetDenials(t *testing.T) {
 	cases := []struct {
 		name       string
 		attributes map[string]any
 		wantReason string
 		wantStatus int
+		wantRole   string
 	}{
 		{
 			name:       "no attributes",
@@ -141,6 +177,7 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 			attributes: map[string]any{TunnelRoleARNAttribute: "arn:aws:iam::999988887777:role/other", TunnelRegionAttribute: testTunnelRegion},
 			wantReason: DenyReasonTunnelRoleNotAllowed,
 			wantStatus: http.StatusForbidden,
+			wantRole:   "arn:aws:iam::999988887777:role/other",
 		},
 	}
 
@@ -178,6 +215,13 @@ func TestTunnelIssuerTargetDenials(t *testing.T) {
 			}
 			if got, want := event.EngineerSub, "sub-123"; got != want {
 				t.Fatalf("engineer_sub = %q, want %q", got, want)
+			}
+			wantRegion := ""
+			if tc.wantRole != "" {
+				wantRegion = testTunnelRegion
+			}
+			if event.TunnelRoleARN != tc.wantRole || event.TunnelRegion != wantRegion {
+				t.Fatalf("audit target = (%q, %q), want (%q, %q)", event.TunnelRoleARN, event.TunnelRegion, tc.wantRole, wantRegion)
 			}
 		})
 	}

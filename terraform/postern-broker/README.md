@@ -237,7 +237,7 @@ The broker denies, with a `tunnel_denied` audit row, instead of falling back to 
 | `tunnel_role_not_allowed` | 403 | The role ARN matches no `tunneling_allowed_role_arns` entry. |
 | `tunnel_target_access_denied` | 500 | The target account refused the broker: the role's trust policy doesn't allow the broker Lambda role, STS is disabled in that region, or the role lacks `iot:OpenTunnel`. |
 
-The broker logs the specific cause (`tunnel target rejected`) next to the audit row. On success it logs `tunnel opened in target account` with the tunnel ID, role and region, which ties the audit row to the `OpenTunnel` event in the target account's CloudTrail. The two attributes also reach Cedar on the `Device` entity like any other Registry attribute; a schema whose policies reference them must declare them (see `avp_schema_json`).
+The broker logs the specific cause (`tunnel target rejected`) next to the audit row. Audit rows for a tunnel that reached the target (`tunnel_authorized`, `tunnel_issued`, or a `tunnel_denied` from the target account) and for `tunnel_role_not_allowed` carry `tunnel_role_arn` and `tunnel_region`. On success the broker also logs `tunnel opened in target account` with the tunnel ID, which ties the audit row to the `OpenTunnel` event in the target account's CloudTrail. The two attributes also reach Cedar on the `Device` entity like any other Registry attribute; a schema whose policies reference them must declare them (see `avp_schema_json`).
 
 ## Extracting the SSH CA public key for devices
 

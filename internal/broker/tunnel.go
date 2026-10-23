@@ -190,6 +190,10 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		if targetDenial != nil {
 			event := denialTemplate(engineerCtx)
 			event.DeviceSerial = deviceCtx.Device.Serial
+			if targetDenial.target != nil {
+				event.TunnelRoleARN = targetDenial.target.RoleARN
+				event.TunnelRegion = targetDenial.target.Region
+			}
 			i.recordTunnelDenialFor(ctx, event, targetDenial.reason, request)
 			slog.Warn("tunnel target rejected",
 				slog.String("denied_reason", targetDenial.reason),
@@ -203,7 +207,8 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 
 	// tunnel_authorized records the resolved TTL by reusing ValidBefore
 	// (overloaded as Issue+TTL for tunnel rows). JTI joins authorized↔issued
-	// on success or authorized↔denied on AWS failure.
+	// on success or authorized↔denied on AWS failure; both inherit the
+	// registry target, if any.
 	authorized := AuditEvent{
 		Timestamp:      engineerCtx.Now,
 		Event:          EventTunnelAuthorized,
@@ -220,6 +225,10 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 		ValidBefore:    engineerCtx.Now.Add(time.Duration(resolvedLifetime) * time.Minute).Unix(),
 		SourceIP:       engineerCtx.SourceIP,
 		UserAgent:      engineerCtx.UserAgent,
+	}
+	if target != nil {
+		authorized.TunnelRoleARN = target.RoleARN
+		authorized.TunnelRegion = target.Region
 	}
 	if err := i.recordAuthorized(ctx, authorized); err != nil {
 		return TunnelOpenResponse{}, fmt.Errorf("record tunnel audit event: %w", err)
@@ -269,8 +278,8 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("jti", engineerCtx.JTI))
 	}
-	// The audit row doesn't say which account the tunnel opened in, and the
-	// target account's CloudTrail names only the broker; this line joins them.
+	// The audit row carries the target but not the AWS tunnel ID; this line
+	// adds it, joining the row to OpenTunnel in the target account's CloudTrail.
 	if target != nil {
 		slog.Info("tunnel opened in target account",
 			slog.String("tunnel_id", result.TunnelID),

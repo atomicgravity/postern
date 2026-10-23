@@ -57,10 +57,13 @@ func validTunnelRegion(region string) bool {
 
 // tunnelTargetDenial is a registry-targeting rejection: the audit reason,
 // the engineer-facing error, and the operator-facing detail for the log.
+// target is set only for a well-formed target the allowlist rejected, so the
+// audit row can record what the record asked for.
 type tunnelTargetDenial struct {
 	reason string
 	err    error
 	detail string
+	target *TunnelTarget
 }
 
 // resolveTunnelTarget reads the tunnel target from the device record and
@@ -104,6 +107,7 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 			reason: DenyReasonTunnelRoleNotAllowed,
 			err:    Error{StatusCode: http.StatusForbidden, Message: "device tunnel target role is not allowed by this broker"},
 			detail: fmt.Sprintf("%s %q matches no allowed role ARN", TunnelRoleARNAttribute, roleARN),
+			target: &TunnelTarget{RoleARN: roleARN, Region: region},
 		}
 	}
 

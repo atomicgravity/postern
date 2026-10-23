@@ -320,6 +320,11 @@ type AuditEvent struct {
 	IssuedAt       int64     `json:"issued_at,omitempty"`
 	SourceIP       string    `json:"source_ip,omitempty"`
 	UserAgent      string    `json:"user_agent,omitempty"`
+	// TunnelRoleARN and TunnelRegion record where a registry-targeted tunnel
+	// opens (tunneling.target_from_registry); the target account's CloudTrail
+	// names only the broker, so this row is the forensic link.
+	TunnelRoleARN string `json:"tunnel_role_arn,omitempty"`
+	TunnelRegion  string `json:"tunnel_region,omitempty"`
 }
 
 // SystemClock is the production Clock impl that delegates to time.Now.
