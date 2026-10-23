@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling"
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling/types"
+	"github.com/aws/smithy-go"
 )
 
 // fakeIoTClient is the test-side recorder for the AWSIoTClient interface.
@@ -189,6 +190,73 @@ func TestOpenTunnelRejectsEmptySDKResponse(t *testing.T) {
 			}
 			if got, want := classifier.TunnelingErrorKind(), broker.TunnelingErrorUnknown; got != want {
 				t.Fatalf("kind = %d, want %d (empty-response should map to Unknown)", got, want)
+			}
+		})
+	}
+}
+
+// failingCredentials stands in for an AssumeRole provider whose STS call fails.
+type failingCredentials struct{ err error }
+
+func (f failingCredentials) Retrieve(context.Context) (aws.Credentials, error) {
+	return aws.Credentials{}, f.err
+}
+
+// TestOpenTunnelTargetAccessDeniedClassification locks which failures count
+// as a target-account refusal. The AssumeRole cases run through a real SDK
+// client, so the classification must survive the SDK's own wrapping of a
+// credentials error; they fail before any request is sent.
+func TestOpenTunnelTargetAccessDeniedClassification(t *testing.T) {
+	target := &broker.TunnelTarget{RoleARN: "arn:aws:iam::111122223333:role/tunnel", Region: "eu-central-1"}
+	sdkClient := func(stsErr error) *AWSIoTTunneling {
+		return newTargetTunneling(
+			func(string) aws.CredentialsProvider {
+				return aws.NewCredentialsCache(assumeRoleProvider{failingCredentials{err: stsErr}})
+			},
+			func(credentials aws.CredentialsProvider, region string) AWSIoTClient {
+				return iotsecuretunneling.New(iotsecuretunneling.Options{Region: region, Credentials: credentials, RetryMaxAttempts: 1})
+			},
+		)
+	}
+	fakeClient := func(err error) *AWSIoTTunneling {
+		return newTargetTunneling(
+			func(string) aws.CredentialsProvider { return &staticCredentials{} },
+			func(aws.CredentialsProvider, string) AWSIoTClient { return &fakeIoTClient{err: err} },
+		)
+	}
+	openDenied := &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized"}
+	fixed, err := NewAWSIoTTunneling(&fakeIoTClient{err: openDenied}, "us-west-2")
+	if err != nil {
+		t.Fatalf("NewAWSIoTTunneling() error = %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		tun    *AWSIoTTunneling
+		target *broker.TunnelTarget
+		want   broker.TunnelingErrorKind
+	}{
+		{"assume role denied", sdkClient(&smithy.GenericAPIError{Code: "AccessDenied"}), target, broker.TunnelingErrorTargetAccessDenied},
+		{"STS region disabled", sdkClient(&smithy.GenericAPIError{Code: "RegionDisabledException"}), target, broker.TunnelingErrorTargetAccessDenied},
+		{"assume role throttled stays retryable", sdkClient(&smithy.GenericAPIError{Code: "Throttling"}), target, broker.TunnelingErrorUnknown},
+		{"assume role network failure stays retryable", sdkClient(errors.New("dial tcp: timeout")), target, broker.TunnelingErrorUnknown},
+		{"open tunnel denied in target account", fakeClient(openDenied), target, broker.TunnelingErrorTargetAccessDenied},
+		{"open tunnel denied in own account", fixed, nil, broker.TunnelingErrorUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.tun.OpenTunnel(context.Background(), broker.TunnelOpenInternal{
+				ThingName:          "device-SERIAL123",
+				Services:           []string{"SSH"},
+				MaxLifetimeMinutes: 60,
+				Target:             tc.target,
+			})
+			var classifier broker.TunnelingErrorClassifier
+			if !errors.As(err, &classifier) {
+				t.Fatalf("OpenTunnel() error = %v, want a TunnelingErrorClassifier", err)
+			}
+			if got := classifier.TunnelingErrorKind(); got != tc.want {
+				t.Fatalf("kind = %d, want %d (err = %v)", got, tc.want, err)
 			}
 		})
 	}

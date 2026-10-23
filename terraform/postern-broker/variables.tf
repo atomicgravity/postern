@@ -433,7 +433,7 @@ variable "tunneling_target_from_registry" {
 }
 
 variable "tunneling_allowed_role_arns" {
-  description = "IAM role ARNs (exact, or `*` glob patterns such as `arn:aws:iam::<account-id>:role/postern-*`; a `*` in the account field matches every AWS account) a device record may name as its `tunnel_role_arn`. Becomes both the broker's allowlist and the resource list of its `sts:AssumeRole` grant. Required (non-empty) when tunneling_target_from_registry = true; must be empty otherwise."
+  description = "IAM role ARNs a device record may name as its `tunnel_role_arn`: exact, or with `*` wildcards in the role name only, such as `arn:aws:iam::<account-id>:role/postern-*`. The account ID must be concrete, and `,` and `?` aren't allowed. Becomes both the broker's allowlist and the resource list of its `sts:AssumeRole` grant. Required (non-empty) when tunneling_target_from_registry = true; must be empty otherwise."
   type        = list(string)
   default     = []
 
@@ -443,7 +443,8 @@ variable "tunneling_allowed_role_arns" {
   }
 
   validation {
-    condition     = alltrue([for arn in var.tunneling_allowed_role_arns : startswith(arn, "arn:")])
-    error_message = "tunneling_allowed_role_arns entries must be IAM role ARNs or ARN patterns starting with \"arn:\"."
+    # Mirrors the broker's own check, so a bad entry fails at plan, not at Lambda start.
+    condition     = alltrue([for arn in var.tunneling_allowed_role_arns : can(regex("^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=.@_/*-]+$", arn))])
+    error_message = "tunneling_allowed_role_arns entries must be arn:aws:iam::<12-digit account>:role/<name> ARNs; `*` is allowed only in the role name, and `,` and `?` are not allowed."
   }
 }

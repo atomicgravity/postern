@@ -45,8 +45,9 @@ var ErrTunnelingThingNameFormatInvalid = errors.New("tunneling thing-name format
 //
 // TargetFromRegistry makes each tunnel open where the device record says
 // (TunnelRoleARNAttribute + TunnelRegionAttribute) instead of in the
-// backend's own account; AllowedRoleARNs (exact ARNs or `*` globs) bounds
-// which roles a registry entry may name and must be non-empty in that mode.
+// backend's own account; AllowedRoleARNs bounds which roles a registry
+// entry may name, must be non-empty in that mode, and every entry must pass
+// ValidAllowedRoleARN.
 type TunnelIssuerDeps struct {
 	PipelineDeps
 	Tunneling                 Tunneling
@@ -87,10 +88,13 @@ func NewTunnelIssuer(deps TunnelIssuerDeps) (*TunnelIssuer, error) {
 		formatErr = fmt.Errorf("%w: %q", ErrTunnelingThingNameFormatInvalid, format)
 	}
 
-	allowedRoleARNs := normalizeAllowedRoleARNs(deps.AllowedRoleARNs)
 	var targetErr error
-	if deps.TargetFromRegistry && len(allowedRoleARNs) == 0 {
-		targetErr = ErrTunnelingAllowedRoleARNsRequired
+	if deps.TargetFromRegistry {
+		if len(deps.AllowedRoleARNs) == 0 {
+			targetErr = ErrTunnelingAllowedRoleARNsRequired
+		} else {
+			targetErr = validateAllowedRoleARNs(deps.AllowedRoleARNs)
+		}
 	}
 
 	if joined := errors.Join(pipelineErr, tunnelingErr, formatErr, targetErr); joined != nil {
@@ -111,7 +115,7 @@ func NewTunnelIssuer(deps TunnelIssuerDeps) (*TunnelIssuer, error) {
 		defaultMaxLifetime: defaultLifetime,
 		thingNameFormat:    format,
 		targetFromRegistry: deps.TargetFromRegistry,
-		allowedRoleARNs:    allowedRoleARNs,
+		allowedRoleARNs:    deps.AllowedRoleARNs,
 	}, nil
 }
 
@@ -119,8 +123,9 @@ func NewTunnelIssuer(deps TunnelIssuerDeps) (*TunnelIssuer, error) {
 // AWS-side source access token + tunnel ID + region for the CLI's source
 // proxy to dial. Same fail-closed-pre-call / best-effort-post-call audit
 // pattern the cert-mint and time-payload pipelines use. On AWS failure
-// the deny row's reason is tunnel_limit_exceeded (LimitExceededException)
-// or tunneling_unavailable (everything else).
+// the deny row's reason is tunnel_limit_exceeded (LimitExceededException),
+// tunnel_target_access_denied (a registry target refused the broker), or
+// tunneling_unavailable (everything else).
 func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest) (TunnelOpenResponse, error) {
 	engineerCtx, denial, err := i.verifyEngineer(ctx, engineerPreambleRequest{
 		AccessToken: request.AccessToken,
@@ -325,6 +330,11 @@ const (
 	// tunnel_limit_exceeded / 429 so operators can alert distinctly on
 	// quota saturation.
 	TunnelingErrorLimitExceeded
+	// TunnelingErrorTargetAccessDenied maps a registry-targeted tunnel the
+	// target account refuses (the role won't let the broker assume it, or
+	// lacks iot:OpenTunnel) to tunnel_target_access_denied / 500: an operator
+	// misconfiguration, not an outage worth retrying.
+	TunnelingErrorTargetAccessDenied
 )
 
 // tunnelingDenyReason maps a Tunneling error to an audit-stable reason
@@ -333,19 +343,34 @@ func tunnelingDenyReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	var classifier TunnelingErrorClassifier
-	if errors.As(err, &classifier) && classifier.TunnelingErrorKind() == TunnelingErrorLimitExceeded {
+	switch tunnelingErrorKind(err) {
+	case TunnelingErrorLimitExceeded:
 		return DenyReasonTunnelLimitExceeded
+	case TunnelingErrorTargetAccessDenied:
+		return DenyReasonTunnelTargetAccessDenied
 	}
 	return DenyReasonTunnelingUnavailable
 }
 
 // mapTunnelingError maps a Tunneling error to the broker.Error the HTTP
-// boundary surfaces: LimitExceeded → 429, everything else → 503.
+// boundary surfaces: LimitExceeded → 429, TargetAccessDenied → 500,
+// everything else → 503.
 func mapTunnelingError(err error) error {
-	var classifier TunnelingErrorClassifier
-	if errors.As(err, &classifier) && classifier.TunnelingErrorKind() == TunnelingErrorLimitExceeded {
+	switch tunnelingErrorKind(err) {
+	case TunnelingErrorLimitExceeded:
 		return Error{StatusCode: http.StatusTooManyRequests, Message: "tunnel quota exceeded; close idle tunnels or contact your operator"}
+	case TunnelingErrorTargetAccessDenied:
+		return Error{StatusCode: http.StatusInternalServerError, Message: "broker can't open tunnels in the device's account; contact your operator"}
 	}
 	return Error{StatusCode: http.StatusServiceUnavailable, Message: "tunneling backend unavailable"}
+}
+
+// tunnelingErrorKind reads the classifier through fmt.Errorf wraps;
+// unclassified errors are TunnelingErrorUnknown.
+func tunnelingErrorKind(err error) TunnelingErrorKind {
+	var classifier TunnelingErrorClassifier
+	if errors.As(err, &classifier) {
+		return classifier.TunnelingErrorKind()
+	}
+	return TunnelingErrorUnknown
 }

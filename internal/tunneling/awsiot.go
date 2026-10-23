@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling"
 	"github.com/aws/aws-sdk-go-v2/service/iotsecuretunneling/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 // ErrTunnelingRegionRequired is returned when the region is empty. The CLI
@@ -78,9 +79,9 @@ func NewAWSIoTTargetTunnelingFromConfig(config aws.Config, sessionName string) *
 	sessionName = roleSessionName(sessionName)
 	return newTargetTunneling(
 		func(roleARN string) aws.CredentialsProvider {
-			return aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(options *stscreds.AssumeRoleOptions) {
+			return aws.NewCredentialsCache(assumeRoleProvider{stscreds.NewAssumeRoleProvider(stsClient, roleARN, func(options *stscreds.AssumeRoleOptions) {
 				options.RoleSessionName = sessionName
-			}), func(options *aws.CredentialsCacheOptions) {
+			})}, func(options *aws.CredentialsCacheOptions) {
 				// Refresh early so a request never signs with credentials that expire in flight.
 				options.ExpiryWindow = time.Minute
 			})
@@ -132,6 +133,32 @@ func (c *targetClients) client(target broker.TunnelTarget) AWSIoTClient {
 	return client
 }
 
+// assumeRoleProvider tags AssumeRole failures so classifyError can tell
+// them apart from OpenTunnel failures once the SDK has wrapped them.
+type assumeRoleProvider struct {
+	provider aws.CredentialsProvider
+}
+
+func (p assumeRoleProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	credentials, err := p.provider.Retrieve(ctx)
+	if err != nil {
+		return aws.Credentials{}, &assumeRoleError{err: err}
+	}
+	return credentials, nil
+}
+
+type assumeRoleError struct {
+	err error
+}
+
+func (e *assumeRoleError) Error() string {
+	return fmt.Sprintf("assume tunnel target role: %v", e.err)
+}
+
+func (e *assumeRoleError) Unwrap() error {
+	return e.err
+}
+
 // roleSessionName maps name onto the STS RoleSessionName alphabet
 // ([\w+=,.@-], 2-64 chars), replacing other characters with '-'.
 func roleSessionName(name string) string {
@@ -180,7 +207,7 @@ func (t *AWSIoTTunneling) OpenTunnel(ctx context.Context, request broker.TunnelO
 		},
 	})
 	if err != nil {
-		return broker.TunnelOpenResult{}, classifyError(err)
+		return broker.TunnelOpenResult{}, classifyError(err, request.Target != nil)
 	}
 
 	if output.TunnelId == nil || *output.TunnelId == "" {
@@ -198,14 +225,39 @@ func (t *AWSIoTTunneling) OpenTunnel(ctx context.Context, request broker.TunnelO
 }
 
 // classifyError wraps AWS errors so the broker pipeline routes
-// LimitExceededException → tunnel_limit_exceeded / 429 and everything else
-// → tunneling_unavailable / 503 without importing the SDK error types.
-func classifyError(err error) error {
+// LimitExceededException → tunnel_limit_exceeded / 429, a registry target
+// that refuses the broker → tunnel_target_access_denied / 500, and
+// everything else → tunneling_unavailable / 503 without importing the SDK
+// error types. Only access-denied codes count as a refusal: a throttled or
+// failing STS stays retryable.
+func classifyError(err error, targeted bool) error {
 	var limitExceeded *types.LimitExceededException
 	if errors.As(err, &limitExceeded) {
 		return wrap(broker.TunnelingErrorLimitExceeded, err)
 	}
+	if targeted && accessDenied(err) {
+		return wrap(broker.TunnelingErrorTargetAccessDenied, err)
+	}
 	return wrap(broker.TunnelingErrorUnknown, err)
+}
+
+// accessDenied reports an AssumeRole rejection (trust policy, disabled STS
+// region) or an OpenTunnel AccessDeniedException in the target account.
+func accessDenied(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	var assumeErr *assumeRoleError
+	if errors.As(err, &assumeErr) {
+		switch apiErr.ErrorCode() {
+		case "AccessDenied", "RegionDisabledException":
+			return true
+		}
+		return false
+	}
+	// The iotsecuretunneling model declares no AccessDeniedException type.
+	return apiErr.ErrorCode() == "AccessDeniedException"
 }
 
 // tunnelingError implements broker.TunnelingErrorClassifier; Unwrap keeps

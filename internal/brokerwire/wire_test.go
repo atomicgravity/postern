@@ -51,7 +51,7 @@ func TestBuildTunnelIssuerEnablement(t *testing.T) {
 		{name: "fixed region", config: &brokerhandlers.TunnelingConfig{IOTRegion: "us-west-2"}, want: true},
 		{name: "registry target", config: &brokerhandlers.TunnelingConfig{
 			TargetFromRegistry: true,
-			AllowedRoleARNs:    []string{"arn:aws:iam::*:role/postern-tunnel"},
+			AllowedRoleARNs:    []string{"arn:aws:iam::111122223333:role/postern-tunnel"},
 		}, want: true},
 	}
 	for _, tc := range cases {

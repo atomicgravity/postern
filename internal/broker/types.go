@@ -103,12 +103,14 @@ const (
 	// Registry-targeted tunneling (tunneling.target_from_registry) denials.
 	// `tunnel_target_missing`: the device record carries neither target
 	// attribute. `tunnel_target_invalid`: only one is set, a value isn't a
-	// string, the role ARN is malformed, or the region is malformed.
-	// `tunnel_role_not_allowed`: the role ARN matches no
-	// tunneling.allowed_role_arns entry.
-	DenyReasonTunnelTargetMissing  = "tunnel_target_missing"
-	DenyReasonTunnelTargetInvalid  = "tunnel_target_invalid"
-	DenyReasonTunnelRoleNotAllowed = "tunnel_role_not_allowed"
+	// string, or the role ARN or region is malformed or outside the
+	// commercial partition. `tunnel_role_not_allowed`: the role ARN matches no
+	// tunneling.allowed_role_arns entry. `tunnel_target_access_denied`: the
+	// target account refused the broker (AssumeRole or OpenTunnel denied).
+	DenyReasonTunnelTargetMissing      = "tunnel_target_missing"
+	DenyReasonTunnelTargetInvalid      = "tunnel_target_invalid"
+	DenyReasonTunnelRoleNotAllowed     = "tunnel_role_not_allowed"
+	DenyReasonTunnelTargetAccessDenied = "tunnel_target_access_denied"
 )
 
 // Device attributes the tunnel pipeline reads when

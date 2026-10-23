@@ -67,7 +67,7 @@ var (
 	ErrTunnelingThingNameFormatInvalid    = errors.New("tunneling.thing_name_format must contain exactly one {serial} placeholder")
 	ErrTunnelingAllowedRoleARNsRequired   = errors.New("tunneling.allowed_role_arns must be non-empty when tunneling.target_from_registry is true")
 	ErrTunnelingAllowedRoleARNsUnexpected = errors.New("tunneling.allowed_role_arns is only valid when tunneling.target_from_registry is true")
-	ErrTunnelingAllowedRoleARNInvalid     = errors.New("tunneling.allowed_role_arns entry must be an IAM role ARN or an ARN pattern starting with \"arn:\"")
+	ErrTunnelingAllowedRoleARNInvalid     = errors.New("tunneling.allowed_role_arns entry must be an arn:aws:iam::<12-digit account>:role/<name> ARN; `*` is allowed only in the role name, and `,` and `?` are not allowed")
 )
 
 // DefaultTunnelingThingNameFormat is the fallback when
@@ -599,7 +599,7 @@ func validateTunnelingTarget(tunneling *TunnelingConfig) []error {
 	}
 	var errs []error
 	for index, entry := range tunneling.AllowedRoleARNs {
-		if !strings.HasPrefix(entry, "arn:") {
+		if !broker.ValidAllowedRoleARN(entry) {
 			errs = append(errs, errors.Join(
 				ErrTunnelingAllowedRoleARNInvalid,
 				fmt.Errorf("tunneling.allowed_role_arns[%d] %q", index, entry),
@@ -814,7 +814,9 @@ func setTunnelingThingNameFormatFromEnv(config *Config, lookupEnv func(string) (
 }
 
 // setTunnelingTargetFromRegistryFromEnv lazy-allocates TunnelingConfig when
-// the env var is set but the section was absent from the file.
+// the env var is set but the section was absent from the file. Turning the
+// flag off also clears a file-provided allowlist, which is meaningless
+// without it, so the override alone falls back to the broker's own account.
 func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string) (string, bool), sources map[string]string) error {
 	value, ok := lookupTrimmedEnv("POSTERN_TUNNELING_TARGET_FROM_REGISTRY", lookupEnv)
 	if !ok {
@@ -829,6 +831,10 @@ func setTunnelingTargetFromRegistryFromEnv(config *Config, lookupEnv func(string
 	}
 	config.Tunneling.TargetFromRegistry = parsed
 	sources["tunneling.target_from_registry"] = "POSTERN_TUNNELING_TARGET_FROM_REGISTRY"
+	if !parsed {
+		config.Tunneling.AllowedRoleARNs = nil
+		delete(sources, "tunneling.allowed_role_arns")
+	}
 	return nil
 }
 

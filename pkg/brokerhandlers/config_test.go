@@ -1419,7 +1419,7 @@ tunneling:
   target_from_registry: true
   allowed_role_arns:
     - " arn:aws:iam::111122223333:role/postern-tunnel "
-    - arn:aws:iam::*:role/fleet-tunnel
+    - arn:aws:iam::444455556666:role/fleet-*
 `)
 
 	resolved, err := LoadResolvedConfig(LoadConfigOptions{Path: configPath, LookupEnv: emptyBrokerEnv})
@@ -1430,7 +1430,7 @@ tunneling:
 	if tunneling == nil || !tunneling.TargetFromRegistry {
 		t.Fatalf("tunneling = %#v, want target_from_registry", tunneling)
 	}
-	want := []string{"arn:aws:iam::111122223333:role/postern-tunnel", "arn:aws:iam::*:role/fleet-tunnel"}
+	want := []string{"arn:aws:iam::111122223333:role/postern-tunnel", "arn:aws:iam::444455556666:role/fleet-*"}
 	if len(tunneling.AllowedRoleARNs) != len(want) || tunneling.AllowedRoleARNs[0] != want[0] || tunneling.AllowedRoleARNs[1] != want[1] {
 		t.Fatalf("allowed_role_arns = %q, want %q", tunneling.AllowedRoleARNs, want)
 	}
@@ -1450,7 +1450,7 @@ func TestLoadResolvedConfigTunnelingTargetFromEnv(t *testing.T) {
 		Path: configPath,
 		LookupEnv: mapEnv(map[string]string{
 			"POSTERN_TUNNELING_TARGET_FROM_REGISTRY": "true",
-			"POSTERN_TUNNELING_ALLOWED_ROLE_ARNS":    "arn:aws:iam::111122223333:role/a, arn:aws:iam::*:role/b",
+			"POSTERN_TUNNELING_ALLOWED_ROLE_ARNS":    "arn:aws:iam::111122223333:role/a, arn:aws:iam::444455556666:role/b",
 		}),
 	})
 	if err != nil {
@@ -1460,7 +1460,7 @@ func TestLoadResolvedConfigTunnelingTargetFromEnv(t *testing.T) {
 	if tunneling == nil || !tunneling.TargetFromRegistry {
 		t.Fatalf("tunneling = %#v, want target_from_registry", tunneling)
 	}
-	if got := tunneling.AllowedRoleARNs; len(got) != 2 || got[1] != "arn:aws:iam::*:role/b" {
+	if got := tunneling.AllowedRoleARNs; len(got) != 2 || got[1] != "arn:aws:iam::444455556666:role/b" {
 		t.Fatalf("allowed_role_arns = %q", got)
 	}
 	if got, want := resolved.Sources["tunneling.target_from_registry"], "POSTERN_TUNNELING_TARGET_FROM_REGISTRY"; got != want {
@@ -1468,6 +1468,34 @@ func TestLoadResolvedConfigTunnelingTargetFromEnv(t *testing.T) {
 	}
 	if got, want := resolved.Sources["tunneling.allowed_role_arns"], "POSTERN_TUNNELING_ALLOWED_ROLE_ARNS"; got != want {
 		t.Fatalf("allowed_role_arns source = %q, want %q", got, want)
+	}
+}
+
+// TestLoadResolvedConfigTunnelingTargetEnvOffClearsFileAllowlist locks the
+// fallback override: the env var alone turns registry targeting off even
+// though the file still lists allowed_role_arns.
+func TestLoadResolvedConfigTunnelingTargetEnvOffClearsFileAllowlist(t *testing.T) {
+	configPath := writeBrokerConfigForTest(t, tunnelingTargetBaseYAML+`
+tunneling:
+  iot_region: us-west-2
+  target_from_registry: true
+  allowed_role_arns:
+    - arn:aws:iam::111122223333:role/postern-tunnel
+`)
+
+	resolved, err := LoadResolvedConfig(LoadConfigOptions{
+		Path:      configPath,
+		LookupEnv: mapEnv(map[string]string{"POSTERN_TUNNELING_TARGET_FROM_REGISTRY": "false"}),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolvedConfig() error = %v", err)
+	}
+	tunneling := resolved.Config.Tunneling
+	if tunneling.TargetFromRegistry || len(tunneling.AllowedRoleARNs) != 0 {
+		t.Fatalf("tunneling = %#v, want targeting off with no allowlist", tunneling)
+	}
+	if _, ok := resolved.Sources["tunneling.allowed_role_arns"]; ok {
+		t.Fatalf("allowed_role_arns source still recorded: %q", resolved.Sources["tunneling.allowed_role_arns"])
 	}
 }
 
@@ -1489,9 +1517,12 @@ func TestValidateTunnelingTarget(t *testing.T) {
 		want      error
 	}{
 		{name: "flag without allowlist", tunneling: TunnelingConfig{TargetFromRegistry: true}, want: ErrTunnelingAllowedRoleARNsRequired},
-		{name: "allowlist without flag", tunneling: TunnelingConfig{IOTRegion: "us-west-2", AllowedRoleARNs: []string{"arn:aws:iam::1:role/x"}}, want: ErrTunnelingAllowedRoleARNsUnexpected},
+		{name: "allowlist without flag", tunneling: TunnelingConfig{IOTRegion: "us-west-2", AllowedRoleARNs: []string{"arn:aws:iam::111122223333:role/x"}}, want: ErrTunnelingAllowedRoleARNsUnexpected},
 		{name: "non-ARN entry", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"postern-tunnel"}}, want: ErrTunnelingAllowedRoleARNInvalid},
-		{name: "valid", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:aws:iam::*:role/x"}}},
+		{name: "account wildcard", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:aws:iam::*:role/x"}}, want: ErrTunnelingAllowedRoleARNInvalid},
+		{name: "catch-all", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:*"}}, want: ErrTunnelingAllowedRoleARNInvalid},
+		{name: "comma in role name", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:aws:iam::111122223333:role/tunnel,eu"}}, want: ErrTunnelingAllowedRoleARNInvalid},
+		{name: "valid", tunneling: TunnelingConfig{TargetFromRegistry: true, AllowedRoleARNs: []string{"arn:aws:iam::111122223333:role/postern-*"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

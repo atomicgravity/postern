@@ -8,17 +8,52 @@ import (
 	"strings"
 )
 
-// ErrTunnelingAllowedRoleARNsRequired is returned by NewTunnelIssuer when
-// TargetFromRegistry is on with no allowed role ARNs: without an allowlist
-// any registry writer could point the broker at an arbitrary role.
-var ErrTunnelingAllowedRoleARNsRequired = errors.New("tunneling allowed role ARNs are required when targeting from the registry")
+var (
+	// ErrTunnelingAllowedRoleARNsRequired is returned by NewTunnelIssuer when
+	// TargetFromRegistry is on with no allowed role ARNs: without an allowlist
+	// any registry writer could point the broker at an arbitrary role.
+	ErrTunnelingAllowedRoleARNsRequired = errors.New("tunneling allowed role ARNs are required when targeting from the registry")
+	// ErrTunnelingAllowedRoleARNInvalid is returned by NewTunnelIssuer for an
+	// entry ValidAllowedRoleARN rejects.
+	ErrTunnelingAllowedRoleARNInvalid = errors.New("tunneling allowed role ARN is invalid")
+)
 
 var (
-	// IAM role ARN in any partition; the role name may carry a path.
-	tunnelRoleARNPattern = regexp.MustCompile(`^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$`)
-	// AWS region code: us-east-1, us-gov-west-1, ap-southeast-2, cn-north-1.
+	// IAM role ARN in the commercial partition; the role name may carry a
+	// path. Other partitions are rejected: the broker's STS client only
+	// reaches its own partition, and the CLI dials *.amazonaws.com.
+	tunnelRoleARNPattern = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$`)
+	// AWS region code: us-east-1, ap-southeast-2, eu-central-1.
 	tunnelRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+	// Allowlist entry: a concrete account, with `*` allowed only in the role
+	// name. Excludes `,` (the env var is comma-joined) and `?` (an IAM
+	// wildcard globMatch doesn't implement).
+	allowedRoleARNPattern = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=.@_/*-]+$`)
 )
+
+// Region prefixes of partitions other than aws; see tunnelRoleARNPattern.
+var nonCommercialRegionPrefixes = []string{"cn-", "us-gov-", "us-iso", "eusc-"}
+
+// ValidAllowedRoleARN reports whether entry is a usable
+// tunneling.allowed_role_arns entry: a commercial-partition IAM role ARN
+// with a concrete 12-digit account, `*` wildcards only in the role name, and
+// no `,` or `?`.
+func ValidAllowedRoleARN(entry string) bool {
+	return allowedRoleARNPattern.MatchString(entry)
+}
+
+// validTunnelRegion reports whether region is a commercial-partition region code.
+func validTunnelRegion(region string) bool {
+	if !tunnelRegionPattern.MatchString(region) {
+		return false
+	}
+	for _, prefix := range nonCommercialRegionPrefixes {
+		if strings.HasPrefix(region, prefix) {
+			return false
+		}
+	}
+	return true
+}
 
 // tunnelTargetDenial is a registry-targeting rejection: the audit reason,
 // the engineer-facing error, and the operator-facing detail for the log.
@@ -59,9 +94,9 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 	case !regionIsString:
 		return nil, invalid(TunnelRegionAttribute + " is not a string")
 	case !tunnelRoleARNPattern.MatchString(roleARN):
-		return nil, invalid(fmt.Sprintf("%s %q is not an IAM role ARN", TunnelRoleARNAttribute, roleARN))
-	case !tunnelRegionPattern.MatchString(region):
-		return nil, invalid(fmt.Sprintf("%s %q is not an AWS region", TunnelRegionAttribute, region))
+		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition IAM role ARN", TunnelRoleARNAttribute, roleARN))
+	case !validTunnelRegion(region):
+		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition AWS region", TunnelRegionAttribute, region))
 	}
 
 	if !roleARNAllowed(roleARN, allowedRoleARNs) {
@@ -92,7 +127,7 @@ func tunnelTargetAttribute(attributes map[string]any, key string) (value string,
 }
 
 // roleARNAllowed matches roleARN against exact ARNs or `*` globs. `*` spans
-// any run of characters, including `:` and `/`, as in IAM resource ARNs.
+// any run of characters, including `/`, as in IAM resource ARNs.
 func roleARNAllowed(roleARN string, allowed []string) bool {
 	for _, pattern := range allowed {
 		if globMatch(pattern, roleARN) {
@@ -128,13 +163,14 @@ func globMatch(pattern, value string) bool {
 	return p == len(pattern)
 }
 
-// normalizeAllowedRoleARNs trims entries and drops empties.
-func normalizeAllowedRoleARNs(entries []string) []string {
-	out := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			out = append(out, trimmed)
+// validateAllowedRoleARNs applies ValidAllowedRoleARN to every entry; an
+// empty list is the caller's check.
+func validateAllowedRoleARNs(entries []string) error {
+	var errs []error
+	for index, entry := range entries {
+		if !ValidAllowedRoleARN(entry) {
+			errs = append(errs, fmt.Errorf("%w: [%d] %q", ErrTunnelingAllowedRoleARNInvalid, index, entry))
 		}
 	}
-	return out
+	return errors.Join(errs...)
 }

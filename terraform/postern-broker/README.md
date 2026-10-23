@@ -96,7 +96,7 @@ See `variables.tf` for the full list with descriptions. Highlights:
 | `tunneling_default_max_lifetime_minutes` | `480` (8 hours) by default. Broker fallback TTL when the engineer omits `--max-lifetime`. AWS caps individual tunnels at 720 (12 hours); the module validation enforces the (0, 720] range. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_thing_name_format` | `"device-{serial}"` by default. Format the broker substitutes the resolved device serial into when calling AWS IoT `OpenTunnel`; `{serial}` is replaced with the registry-resolved hardware serial, other characters pass through verbatim. The placeholder must appear exactly once. Only consulted when `tunneling_enabled = true`. |
 | `tunneling_target_from_registry` | `false` by default. When `true`, each tunnel opens in the account and region the device's Registry record names (`tunnel_role_arn`, `tunnel_region`) instead of the broker's own; the broker role gets `sts:AssumeRole` on `tunneling_allowed_role_arns` in place of `iot:OpenTunnel`. See "Tunnels in the device's account" below. Only consulted when `tunneling_enabled = true`. |
-| `tunneling_allowed_role_arns` | `[]` by default. Role ARNs (exact or `*` globs) a device record may name; a `*` in the account field matches every AWS account, so pin the account IDs; both the broker's allowlist and the `sts:AssumeRole` resource list. Required non-empty when `tunneling_target_from_registry = true`, must be empty otherwise. |
+| `tunneling_allowed_role_arns` | `[]` by default. Role ARNs a device record may name: exact, or with `*` wildcards in the role name only (`arn:aws:iam::111122223333:role/postern-*`). The account ID must be concrete, and `,` and `?` aren't allowed. Both the broker's allowlist and the `sts:AssumeRole` resource list. Required non-empty when `tunneling_target_from_registry = true`, must be empty otherwise. |
 
 ## Outputs
 
@@ -233,8 +233,9 @@ The broker denies, with a `tunnel_denied` audit row, instead of falling back to 
 | `denied_reason` | HTTP | Cause |
 |---|---|---|
 | `tunnel_target_missing` | 409 | The record has neither attribute. The device stays reachable over LAN SSH. |
-| `tunnel_target_invalid` | 500 | Only one attribute is set, a value is not a string, the role ARN is not an IAM role ARN, or the region is not an AWS region code. |
+| `tunnel_target_invalid` | 500 | Only one attribute is set, a value is not a string, or the role ARN or region is malformed or outside the commercial `aws` partition (China, GovCloud and other partitions aren't supported as targets). |
 | `tunnel_role_not_allowed` | 403 | The role ARN matches no `tunneling_allowed_role_arns` entry. |
+| `tunnel_target_access_denied` | 500 | The target account refused the broker: the role's trust policy doesn't allow the broker Lambda role, STS is disabled in that region, or the role lacks `iot:OpenTunnel`. |
 
 The broker logs the specific cause (`tunnel target rejected`) next to the audit row. On success it logs `tunnel opened in target account` with the tunnel ID, role and region, which ties the audit row to the `OpenTunnel` event in the target account's CloudTrail. The two attributes also reach Cedar on the `Device` entity like any other Registry attribute; a schema whose policies reference them must declare them (see `avp_schema_json`).
 

@@ -41,7 +41,7 @@ func TestTunnelIssuerTargetFromRegistryPassesTarget(t *testing.T) {
 	})}
 	audit := deps.Audit.(*recordingAudit)
 	tun := &recordingTunneling{result: TunnelOpenResult{TunnelID: "t", SourceAccessToken: "s", Region: testTunnelRegion}}
-	issuer := newTargetTunnelIssuer(t, deps, tun, []string{"arn:aws:iam::*:role/postern-tunnel"})
+	issuer := newTargetTunnelIssuer(t, deps, tun, []string{"arn:aws:iam::111122223333:role/postern-*"})
 
 	response, err := issuer.OpenTunnel(context.Background(), TunnelOpenRequest{AccessToken: "token", DeviceID: "prod-a012"})
 	if err != nil {
@@ -198,17 +198,61 @@ func TestTunnelIssuerTargetCheckedAfterPolicy(t *testing.T) {
 	}
 }
 
-func TestNewTunnelIssuerRequiresAllowedRoleARNsWithTarget(t *testing.T) {
+func TestNewTunnelIssuerValidatesAllowedRoleARNsWithTarget(t *testing.T) {
 	deps := newTunnelTestDeps(t)
-	for _, allowed := range [][]string{nil, {"", "  "}} {
+	cases := []struct {
+		allowed []string
+		want    error
+	}{
+		{nil, ErrTunnelingAllowedRoleARNsRequired},
+		{[]string{}, ErrTunnelingAllowedRoleARNsRequired},
+		{[]string{""}, ErrTunnelingAllowedRoleARNInvalid},
+		{[]string{testTunnelRoleARN, "arn:aws:iam::*:role/postern-tunnel"}, ErrTunnelingAllowedRoleARNInvalid},
+	}
+	for _, tc := range cases {
 		_, err := NewTunnelIssuer(TunnelIssuerDeps{
 			PipelineDeps:       deps.pipeline(),
 			Tunneling:          &recordingTunneling{},
 			TargetFromRegistry: true,
-			AllowedRoleARNs:    allowed,
+			AllowedRoleARNs:    tc.allowed,
 		})
-		if !errors.Is(err, ErrTunnelingAllowedRoleARNsRequired) {
-			t.Fatalf("NewTunnelIssuer(allowed=%q) error = %v, want ErrTunnelingAllowedRoleARNsRequired", allowed, err)
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("NewTunnelIssuer(allowed=%q) error = %v, want %v", tc.allowed, err, tc.want)
+		}
+	}
+}
+
+// TestValidAllowedRoleARN locks the allowlist entry shape: a wildcard can
+// never reach the account field, and `,` / `?` are rejected because the env
+// var is comma-joined and globMatch has no `?`.
+func TestValidAllowedRoleARN(t *testing.T) {
+	for _, entry := range []string{
+		testTunnelRoleARN,
+		"arn:aws:iam::111122223333:role/*",
+		"arn:aws:iam::111122223333:role/path/postern-*",
+		"arn:aws:iam::111122223333:role/a+b=c.d@e_f-g",
+	} {
+		if !ValidAllowedRoleARN(entry) {
+			t.Errorf("ValidAllowedRoleARN(%q) = false, want true", entry)
+		}
+	}
+	for _, entry := range []string{
+		"",
+		"*",
+		"arn:*",
+		"arn:aws:iam::*:role/*",
+		"arn:aws:iam::*:role/postern-tunnel",
+		"arn:aws:iam::1111*:role/x",
+		"arn:aws:iam::111122223333:*",
+		"arn:aws:iam::111122223333:role/",
+		"arn:aws:iam::111122223333:user/bob",
+		"arn:aws:iam::111122223333:role/tunnel,eu",
+		"arn:aws:iam::111122223333:role/tunnel-?",
+		"arn:aws-cn:iam::111122223333:role/x",
+		"arn:aws-us-gov:iam::111122223333:role/x",
+	} {
+		if ValidAllowedRoleARN(entry) {
+			t.Errorf("ValidAllowedRoleARN(%q) = true, want false", entry)
 		}
 	}
 }
@@ -240,14 +284,16 @@ func TestRoleARNAllowed(t *testing.T) {
 func TestTunnelTargetPatterns(t *testing.T) {
 	for _, arn := range []string{
 		testTunnelRoleARN,
-		"arn:aws-us-gov:iam::111122223333:role/path/name",
-		"arn:aws-cn:iam::111122223333:role/a+b=c,d.e@f_g-h",
+		"arn:aws:iam::111122223333:role/path/name",
+		"arn:aws:iam::111122223333:role/a+b=c,d.e@f_g-h",
 	} {
 		if !tunnelRoleARNPattern.MatchString(arn) {
 			t.Errorf("role ARN %q rejected", arn)
 		}
 	}
 	for _, arn := range []string{
+		"arn:aws-us-gov:iam::111122223333:role/path/name",
+		"arn:aws-cn:iam::111122223333:role/x",
 		"arn:aws:iam::111122223333:user/bob",
 		"arn:aws:iam::11112222333:role/x",
 		"arn:aws:sts::111122223333:assumed-role/x/y",
@@ -257,13 +303,13 @@ func TestTunnelTargetPatterns(t *testing.T) {
 			t.Errorf("role ARN %q accepted", arn)
 		}
 	}
-	for _, region := range []string{"us-east-1", "us-gov-west-1", "ap-southeast-2", "cn-north-1", "eu-central-1"} {
-		if !tunnelRegionPattern.MatchString(region) {
+	for _, region := range []string{"us-east-1", "ap-southeast-2", "eu-central-1", "il-central-1"} {
+		if !validTunnelRegion(region) {
 			t.Errorf("region %q rejected", region)
 		}
 	}
-	for _, region := range []string{"", "us-east", "US-EAST-1", "us-east-1a", "https://iot.us-east-1"} {
-		if tunnelRegionPattern.MatchString(region) {
+	for _, region := range []string{"", "us-east", "US-EAST-1", "us-east-1a", "https://iot.us-east-1", "us-gov-west-1", "cn-north-1", "us-iso-east-1", "us-isob-east-1", "eusc-de-east-1"} {
+		if validTunnelRegion(region) {
 			t.Errorf("region %q accepted", region)
 		}
 	}

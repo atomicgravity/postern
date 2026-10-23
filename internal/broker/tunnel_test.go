@@ -282,6 +282,15 @@ func TestTunnelIssuerPipelineFailureModes(t *testing.T) {
 			wantEventOrder: []string{EventTunnelAuthorized, EventTunnelDenied},
 		},
 		{
+			name:           "target account refuses → tunnel_target_access_denied + 500",
+			tunnelingErr:   classifiedTunnelingErr{kind: TunnelingErrorTargetAccessDenied, msg: "AccessDenied"},
+			wantStatus:     http.StatusInternalServerError,
+			wantDenyReason: DenyReasonTunnelTargetAccessDenied,
+			wantAWSCalls:   1,
+			wantAuditCalls: 2,
+			wantEventOrder: []string{EventTunnelAuthorized, EventTunnelDenied},
+		},
+		{
 			name:           "AWS generic failure → tunneling_unavailable + 503",
 			tunnelingErr:   classifiedTunnelingErr{kind: TunnelingErrorUnknown, msg: "service unavailable"},
 			wantStatus:     http.StatusServiceUnavailable,
