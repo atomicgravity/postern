@@ -264,6 +264,17 @@ func (i *TunnelIssuer) OpenTunnel(ctx context.Context, request TunnelOpenRequest
 			slog.String("device_serial", deviceCtx.Device.Serial),
 			slog.String("jti", engineerCtx.JTI))
 	}
+	// The audit row doesn't say which account the tunnel opened in, and the
+	// target account's CloudTrail names only the broker; this line joins them.
+	if target != nil {
+		slog.Info("tunnel opened in target account",
+			slog.String("tunnel_id", result.TunnelID),
+			slog.String("tunnel_role_arn", target.RoleARN),
+			slog.String("tunnel_region", target.Region),
+			slog.String("engineer_sub", engineerCtx.Caller.Subject),
+			slog.String("device_serial", deviceCtx.Device.Serial),
+			slog.String("jti", engineerCtx.JTI))
+	}
 
 	return TunnelOpenResponse{
 		TunnelID:           result.TunnelID,

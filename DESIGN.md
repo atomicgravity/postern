@@ -1070,7 +1070,7 @@ tunneling:
   # names (tunnel_role_arn + tunnel_region) by assuming that role.
   # target_from_registry: true
   # allowed_role_arns:                # exact ARNs or * globs; required with the flag
-  #   - arn:aws:iam::*:role/postern-tunnel
+  #   - arn:aws:iam::<account-id>:role/postern-tunnel
 
 policy:
   # AVP policy store ID. Broker calls IsAuthorizedWithToken on this store
@@ -1089,7 +1089,7 @@ Override precedence: env var > file > defaults. Registry backends are mutually e
 
 Presence of the `tunneling:` section enables tunneling functionality; if the section is omitted, `/ssh/tunnel` returns 501 Not Implemented.
 
-`tunneling.target_from_registry` (env `POSTERN_TUNNELING_TARGET_FROM_REGISTRY`) moves the tunnel's account and region from broker config to the Registry. The Tunneling impl assumes the device record's `tunnel_role_arn` and calls the tunneling API in its `tunnel_region`, which is returned to the CLI; `iot_region` is unused in this mode. `tunneling.allowed_role_arns` (env `POSTERN_TUNNELING_ALLOWED_ROLE_ARNS`, comma-separated) bounds which roles a record may name, so a Registry writer cannot point the broker at an arbitrary role; it is required with the flag and rejected without it. The target check runs after Policy allows the request. A record with neither attribute is denied `tunnel_target_missing`, a malformed or incomplete pair `tunnel_target_invalid`, and an unlisted role `tunnel_role_not_allowed`; there is no fallback to the broker's own account. Assumed-role credentials are cached per role, so the AssumeRole session name identifies the broker, not the engineer; engineer attribution stays in the audit rows.
+`tunneling.target_from_registry` (env `POSTERN_TUNNELING_TARGET_FROM_REGISTRY`) moves the tunnel's account and region from broker config to the Registry. The Tunneling impl assumes the device record's `tunnel_role_arn` and calls the tunneling API in its `tunnel_region`, which is returned to the CLI; `iot_region` is unused in this mode. `tunneling.allowed_role_arns` (env `POSTERN_TUNNELING_ALLOWED_ROLE_ARNS`, comma-separated) bounds which roles a record may name, so a Registry writer cannot point the broker at an arbitrary role; it is required with the flag and rejected without it. The target check runs after Policy allows the request. A record with neither attribute is denied `tunnel_target_missing`, a malformed or incomplete pair `tunnel_target_invalid`, and an unlisted role `tunnel_role_not_allowed`; there is no fallback to the broker's own account. Assumed-role credentials are cached per role, so the AssumeRole session name identifies the broker, not the engineer; engineer attribution stays in the audit rows, and a success log line carries the tunnel ID, role and region to join them to the target account's CloudTrail.
 
 The broker config holds no credentials — KMS ARNs, resource names, and HTTP endpoint URLs only. AWS credentials come from the broker's instance role / Lambda execution role / equivalent.
 
