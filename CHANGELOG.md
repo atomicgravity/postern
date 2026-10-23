@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.7.0](https://github.com/atomicgravity/postern/compare/v1.6.0...v1.7.0) (2026-10-23)
+
+
+### Features
+
+* **postern-broker:** ssh_ca_kms_key_arn input to sign with an existing KMS key ([81d578d](https://github.com/atomicgravity/postern/commit/81d578d6dd2342ed3871a3cf9c4133c2942de838))
+
+
+### Bug Fixes
+
+* **postern-broker:** keep the module ssh ca key until create_ssh_ca_key = false, treat "" as unset, require aws provider 6 ([e83b782](https://github.com/atomicgravity/postern/commit/e83b782cb1e2adbf4a24fd4fb21d5678fc1e172f))
+* **postern-broker:** protect the module SSH CA key with prevent_destroy ([268a70e](https://github.com/atomicgravity/postern/commit/268a70e205a760a239ac9cc1f1460f714500619b))
+* **postern-broker:** warn on ssh_ca_kms_key_arn, alias only the signing key, create_ssh_ca_key defaults from the arn ([a5dbcd8](https://github.com/atomicgravity/postern/commit/a5dbcd8473b32fd6ffe7059677ce6921153a5c8e))
+
+
+### Documentation
+
+* **postern-broker:** note that switching to an external key retires the module key ([4fa6a84](https://github.com/atomicgravity/postern/commit/4fa6a84cf6efb8c00ffcd09561aa5e7b18134d02))
+
 ## [1.6.0](https://github.com/atomicgravity/postern/compare/v1.5.0...v1.6.0) (2026-07-20)
 
 
