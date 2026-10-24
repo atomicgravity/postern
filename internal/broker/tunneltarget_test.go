@@ -362,12 +362,12 @@ func TestTunnelTargetPatterns(t *testing.T) {
 		}
 	}
 	for _, region := range []string{"us-east-1", "ap-southeast-2", "eu-central-1", "il-central-1"} {
-		if !validTunnelRegion(region) {
+		if !tunnelRegionPattern.MatchString(region) {
 			t.Errorf("region %q rejected", region)
 		}
 	}
-	for _, region := range []string{"", "us-east", "US-EAST-1", "us-east-1a", "https://iot.us-east-1", "us-gov-west-1", "cn-north-1", "us-iso-east-1", "us-isob-east-1", "eusc-de-east-1"} {
-		if validTunnelRegion(region) {
+	for _, region := range []string{"", "us-east", "US-EAST-1", "us-east-1a", "https://iot.us-east-1"} {
+		if tunnelRegionPattern.MatchString(region) {
 			t.Errorf("region %q accepted", region)
 		}
 	}

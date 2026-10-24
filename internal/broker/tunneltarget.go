@@ -23,7 +23,8 @@ var (
 	// path. Other partitions are rejected: the broker's STS client only
 	// reaches its own partition, and the CLI dials *.amazonaws.com.
 	tunnelRoleARNPattern = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$`)
-	// AWS region code: us-east-1, ap-southeast-2, eu-central-1.
+	// AWS region code: us-east-1, ap-southeast-2, eu-central-1. The CLI
+	// interpolates it into the data-plane URL it dials.
 	tunnelRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
 	// Allowlist entry: a concrete account, with `*` allowed only in the role
 	// name. Excludes `,` (the env var is comma-joined) and `?` (an IAM
@@ -35,28 +36,12 @@ var (
 // row; IAM role ARNs top out at 2048 characters.
 const maxAuditTargetRunes = 2048
 
-// Region prefixes of partitions other than aws; see tunnelRoleARNPattern.
-var nonCommercialRegionPrefixes = []string{"cn-", "us-gov-", "us-iso", "eusc-"}
-
 // ValidAllowedRoleARN reports whether entry is a usable
 // tunneling.allowed_role_arns entry: a commercial-partition IAM role ARN
 // with a concrete 12-digit account, `*` wildcards only in the role name, and
 // no `,` or `?`.
 func ValidAllowedRoleARN(entry string) bool {
 	return allowedRoleARNPattern.MatchString(entry)
-}
-
-// validTunnelRegion reports whether region is a commercial-partition region code.
-func validTunnelRegion(region string) bool {
-	if !tunnelRegionPattern.MatchString(region) {
-		return false
-	}
-	for _, prefix := range nonCommercialRegionPrefixes {
-		if strings.HasPrefix(region, prefix) {
-			return false
-		}
-	}
-	return true
 }
 
 // tunnelTargetDenial is a registry-targeting rejection: the audit reason,
@@ -109,8 +94,8 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 		return nil, invalid(TunnelRegionAttribute + " is not a string")
 	case !tunnelRoleARNPattern.MatchString(roleARN):
 		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition IAM role ARN", TunnelRoleARNAttribute, roleARN))
-	case !validTunnelRegion(region):
-		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition AWS region", TunnelRegionAttribute, region))
+	case !tunnelRegionPattern.MatchString(region):
+		return nil, invalid(fmt.Sprintf("%s %q is not an AWS region code", TunnelRegionAttribute, region))
 	}
 
 	if !roleARNAllowed(roleARN, allowedRoleARNs) {

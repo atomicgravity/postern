@@ -233,7 +233,7 @@ The broker denies, with a `tunnel_denied` audit row, instead of falling back to 
 | `denied_reason` | HTTP | Cause |
 |---|---|---|
 | `tunnel_target_missing` | 409 | The record has neither attribute. The device stays reachable over LAN SSH. |
-| `tunnel_target_invalid` | 500 | Only one attribute is set, a value is not a string, or the role ARN or region is malformed or outside the commercial `aws` partition (China, GovCloud and other partitions aren't supported as targets). |
+| `tunnel_target_invalid` | 500 | Only one attribute is set, a value is not a string, or the role ARN or region is malformed. Role ARNs must be in the commercial `aws` partition. |
 | `tunnel_role_not_allowed` | 403 | The role ARN matches no `tunneling_allowed_role_arns` entry. |
 | `tunnel_target_access_denied` | 500 | The target account refused the broker: the role's trust policy doesn't allow the broker Lambda role, the target account hasn't activated STS in the broker's region, or the role lacks `iot:OpenTunnel`. |
 
