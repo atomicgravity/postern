@@ -179,7 +179,7 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 
 | Command | Purpose |
 |---|---|
-| `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
+| `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ... --idp-audience-param ... --idp-scopes ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
 | `postern login [--no-browser] [--callback-port <n>]` | SSO + cache access / refresh tokens (`--no-browser` for headless / remote hosts) |
 | `postern ssh [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> [user@]<host> [...]` | SSH with cert auto-mint + reuse |
 | `postern scp [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> <src> <dst> [...]` | scp with cert auto-mint + reuse |
@@ -245,6 +245,22 @@ postern configure \
 
 …or paste a YAML snippet you publish into `~/.postern/config.yaml` directly. Either way, the result is the same. Operators typically pre-bake one of these forms into onboarding docs so engineers don't have to know the IdP details.
 
+The snippet names the token's audience, its scopes, or both — whichever the broker is configured to check (a token matching either one is accepted). A few IdPs need extra keys:
+
+```yaml
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://example.us.auth0.com/
+    client_id: abcdef0123456789
+    audience: https://postern.example.com
+    audience_param: audience    # Auth0 / Okta custom AS; defaults to RFC 8707 "resource"
+    auth_params:                # extra authorize-URL params, e.g. an IdP hint
+      login_hint: alice@example.com
+```
+
+`auth_params` applies to the browser login only; it can't override parameters the login flow sets itself. On Cognito, `idp_identifier: <domain>` skips the enterprise email-first IdP-selection screen.
+
 If engineers want vanilla `ssh` / `scp` / VSCode-Remote-SSH to find their devices (the registered-flow payoff covered above), they run `postern setup-ssh` once, which prepends `Include ~/.postern/ssh.conf` to `~/.ssh/config`. `postern setup-ssh --check` reports whether it's wired and exits non-zero if not.
 
 ## Releases
@@ -262,6 +278,8 @@ cosign verify-blob \
 ```
 
 …then verify each binary against its line in `checksums.txt`.
+
+The macOS `postern` binaries are also Developer ID-signed and notarized by Apple, so Gatekeeper doesn't block them.
 
 ## Layout
 
