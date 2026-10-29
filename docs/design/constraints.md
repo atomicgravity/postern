@@ -99,6 +99,7 @@ Locked constraints and invariants. Rows are removed when they stop being true.
 
 - /ssh/tunnel returns 501 only when the deployment has no tunneling: section configured (architectural opt-in), not as a placeholder.
 - The tunnel lifetime follows the same propose-and-gate model via context.requested_max_lifetime_minutes (deny-only).
+- With tunneling.target_from_registry, the tunnel's role and region come only from the device record and must match tunneling.allowed_role_arns; a missing or invalid target is denied, never opened in the broker's own account.
 
 ## Updates & release
 

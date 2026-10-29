@@ -162,6 +162,8 @@ postern tunnel widget-042                      # hold-open; use ssh widget-042.t
 
 All three commands accept `--max-lifetime <duration>` (Go duration string; capped at 12h per the AWS IoT ceiling). `postern tunnel` also accepts `--port-only` (skip the ssh.conf integration; print the loopback port and hold open).
 
+By default the broker opens tunnels in its own AWS account and `tunneling.iot_region`. With `tunneling.target_from_registry: true`, one broker serves devices in other accounts and regions: it assumes the IAM role named by the device record's `tunnel_role_arn` (which must match `tunneling.allowed_role_arns`) and opens the tunnel in the record's `tunnel_region`. A device without a target is denied (`tunnel_target_missing`) rather than tunneled through the broker's own account. Setup and deny reasons: [`terraform/postern-broker/README.md`](terraform/postern-broker/README.md) ("Tunnels in the device's account").
+
 ### Broken clocks
 
 If a device's clock is too far off to validate a normal cert, repair it first:
@@ -177,7 +179,7 @@ postern timefix widget-042 --ip 192.168.120.119     # ad-hoc, no add-host stanza
 
 | Command | Purpose |
 |---|---|
-| `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
+| `postern configure [--broker ... --idp-issuer ... --idp-client-id ... --idp-audience ... --idp-audience-param ... --idp-scopes ...]` | Write `~/.postern/config.yaml` (or run with no flags to read the current config) |
 | `postern login [--no-browser] [--callback-port <n>]` | SSO + cache access / refresh tokens (`--no-browser` for headless / remote hosts) |
 | `postern ssh [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> [user@]<host> [...]` | SSH with cert auto-mint + reuse |
 | `postern scp [--user <name>] [--tunnel] [--cert-max-lifetime <dur>] <device> <src> <dst> [...]` | scp with cert auto-mint + reuse |
@@ -225,7 +227,7 @@ Each device needs the Postern CA public key in `authorized_keys` for the SSO-aut
 Optional pieces, gated by which recovery paths you want:
 
 - **Broken-clock recovery (`postern timefix`)**: install the on-device verifier + setter binaries (shipped in the `postern-timefix-on-device_<version>_linux_<arch>.tar.gz` release artifact). Reference packaging at [`examples/on-device/timefix/`](examples/on-device/timefix/), which covers install paths, the `setcap cap_sys_time+ep` line for the privileged setter, and the sshd `Match User timefix` ForceCommand stanza that ties the cert principal to the verifier binary.
-- **Firewalled-device recovery (`postern ssh --tunnel` / `postern tunnel`)**: install the AWS IoT Greengrass `aws.greengrass.SecureTunneling` component on the device (subscribed to the `$aws/things/device-<serial>/tunnels/notify` MQTT topic). Reference at [`examples/on-device/secure-tunnel/`](examples/on-device/secure-tunnel/). Pair this with `tunneling_enabled = true` in the broker Terraform module.
+- **Firewalled-device recovery (`postern ssh --tunnel` / `postern tunnel`)**: install the AWS IoT Greengrass `aws.greengrass.SecureTunneling` component on the device (subscribed to the `$aws/things/device-<serial>/tunnels/notify` MQTT topic). Reference at [`examples/on-device/secure-tunnel/`](examples/on-device/secure-tunnel/). Pair this with `tunneling_enabled = true` in the broker Terraform module. Tunnels open in the broker's own AWS account and region; for devices whose IoT things live in other accounts or regions, set `tunneling_target_from_registry = true` and name each device's account and region in its Registry record (see "Tunnels in the device's account" in the module README).
 
 The on-device pieces are reference recipes, not framework code — Postern's device side is "an sshd that trusts the Postern CA pubkey for the right principals." Adapt for your packaging (Yocto, Buildroot, Debian package, OTA bundle, whatever).
 
@@ -242,6 +244,22 @@ postern configure \
 ```
 
 …or paste a YAML snippet you publish into `~/.postern/config.yaml` directly. Either way, the result is the same. Operators typically pre-bake one of these forms into onboarding docs so engineers don't have to know the IdP details.
+
+The snippet names the token's audience, its scopes, or both — whichever the broker is configured to check (a token matching either one is accepted). A few IdPs need extra keys:
+
+```yaml
+default:
+  broker: https://postern.example.com
+  idp:
+    issuer: https://example.us.auth0.com/
+    client_id: abcdef0123456789
+    audience: https://postern.example.com
+    audience_param: audience    # Auth0 / Okta custom AS; defaults to RFC 8707 "resource"
+    auth_params:                # extra authorize-URL params, e.g. an IdP hint
+      login_hint: alice@example.com
+```
+
+`auth_params` applies to the browser login only; it can't override parameters the login flow sets itself. On Cognito, `idp_identifier: <domain>` skips the enterprise email-first IdP-selection screen.
 
 If engineers want vanilla `ssh` / `scp` / VSCode-Remote-SSH to find their devices (the registered-flow payoff covered above), they run `postern setup-ssh` once, which prepends `Include ~/.postern/ssh.conf` to `~/.ssh/config`. `postern setup-ssh --check` reports whether it's wired and exits non-zero if not.
 
@@ -260,6 +278,8 @@ cosign verify-blob \
 ```
 
 …then verify each binary against its line in `checksums.txt`.
+
+The macOS `postern` binaries are also Developer ID-signed and notarized by Apple, so Gatekeeper doesn't block them.
 
 ## Layout
 
