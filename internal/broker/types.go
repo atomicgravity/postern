@@ -104,7 +104,8 @@ const (
 	// `tunnel_target_missing`: the device record carries neither target
 	// attribute. `tunnel_target_invalid`: only one is set, a value isn't a
 	// string, or the role ARN or region is malformed (a role ARN outside
-	// the commercial partition counts as malformed). `tunnel_role_not_allowed`: the role ARN matches no
+	// the commercial partition counts as malformed).
+	// `tunnel_role_not_allowed`: the role ARN matches no
 	// tunneling.allowed_role_arns entry. `tunnel_target_access_denied`: the
 	// target account refused the broker (AssumeRole or OpenTunnel denied).
 	DenyReasonTunnelTargetMissing      = "tunnel_target_missing"

@@ -21,7 +21,7 @@ var (
 var (
 	// IAM role ARN in the commercial partition; the role name may carry a
 	// path. Other partitions are rejected: the broker's STS client only
-	// reaches its own partition, and the CLI dials *.amazonaws.com.
+	// reaches its own partition.
 	tunnelRoleARNPattern = regexp.MustCompile(`^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$`)
 	// AWS region code: us-east-1, ap-southeast-2, eu-central-1. The CLI
 	// interpolates it into the data-plane URL it dials.
@@ -33,7 +33,7 @@ var (
 )
 
 // maxAuditTargetRunes caps unvalidated record values on a denial's audit
-// row; IAM role ARNs top out at 2048 characters.
+// row and log detail; IAM role ARNs top out at 2048 characters.
 const maxAuditTargetRunes = 2048
 
 // ValidAllowedRoleARN reports whether entry is a usable
@@ -93,16 +93,16 @@ func resolveTunnelTarget(device DeviceRecord, allowedRoleARNs []string) (*Tunnel
 	case !regionIsString:
 		return nil, invalid(TunnelRegionAttribute + " is not a string")
 	case !tunnelRoleARNPattern.MatchString(roleARN):
-		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition IAM role ARN", TunnelRoleARNAttribute, roleARN))
+		return nil, invalid(fmt.Sprintf("%s %q is not a commercial-partition IAM role ARN", TunnelRoleARNAttribute, attempted.RoleARN))
 	case !tunnelRegionPattern.MatchString(region):
-		return nil, invalid(fmt.Sprintf("%s %q is not an AWS region code", TunnelRegionAttribute, region))
+		return nil, invalid(fmt.Sprintf("%s %q is not an AWS region code", TunnelRegionAttribute, attempted.Region))
 	}
 
 	if !roleARNAllowed(roleARN, allowedRoleARNs) {
 		return nil, &tunnelTargetDenial{
 			reason: DenyReasonTunnelRoleNotAllowed,
 			err:    Error{StatusCode: http.StatusForbidden, Message: "device tunnel target role is not allowed by this broker"},
-			detail: fmt.Sprintf("%s %q matches no allowed role ARN", TunnelRoleARNAttribute, roleARN),
+			detail: fmt.Sprintf("%s %q matches no allowed role ARN", TunnelRoleARNAttribute, attempted.RoleARN),
 			target: attempted,
 		}
 	}

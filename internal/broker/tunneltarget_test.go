@@ -361,7 +361,7 @@ func TestTunnelTargetPatterns(t *testing.T) {
 			t.Errorf("role ARN %q accepted", arn)
 		}
 	}
-	for _, region := range []string{"us-east-1", "ap-southeast-2", "eu-central-1", "il-central-1"} {
+	for _, region := range []string{"us-east-1", "ap-southeast-2", "eu-central-1", "il-central-1", "us-gov-west-1", "cn-north-1", "eu-isoe-west-1"} {
 		if !tunnelRegionPattern.MatchString(region) {
 			t.Errorf("region %q rejected", region)
 		}
