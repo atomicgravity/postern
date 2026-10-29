@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.8.0](https://github.com/atomicgravity/postern/compare/v1.7.0...v1.8.0) (2026-10-29)
+
+
+### Features
+
+* **broker:** log the tunnel id, role and region when a registry-targeted tunnel opens ([a072291](https://github.com/atomicgravity/postern/commit/a072291297d0e94909cce36cef753cc422bf443f))
+* **broker:** open tunnels in the device's account and region (tunneling.target_from_registry) ([df8aade](https://github.com/atomicgravity/postern/commit/df8aade5c3965c42bf7399f098d4e94e1e92ef8f))
+* **broker:** record the registry tunnel target on audit rows ([46acec9](https://github.com/atomicgravity/postern/commit/46acec95644e73b71b101af9ff1a5ee86d25cd62))
+* **broker:** tunneling.target_from_registry opens tunnels in the device's account and region ([9519080](https://github.com/atomicgravity/postern/commit/9519080e74f897e08d35c3954623e41468ac2f67))
+* **postern-broker:** tunneling_target_from_registry + tunneling_allowed_role_arns for cross-account tunnels ([0811185](https://github.com/atomicgravity/postern/commit/0811185ac2566fd907b2bb0e7d9361f5ddc681e5))
+
+
+### Bug Fixes
+
+* **broker:** audit invalid tunnel targets; env-off ignores the env allowlist ([62f0ed8](https://github.com/atomicgravity/postern/commit/62f0ed8fabf327ec3057f636546d4f85d9cda26c))
+* **broker:** cap tunnel target values in the rejection log detail ([b206a34](https://github.com/atomicgravity/postern/commit/b206a348b1d8168486b24f7cb7c389ea6629e86b))
+* **broker:** harden the registry-targeted tunnel role allowlist ([43d0e45](https://github.com/atomicgravity/postern/commit/43d0e454c075532f80e8e306f2b2fb8cb13f7c6d))
+* **postern-broker:** declare the log-delivery statement AWS adds to the access-log policy ([d10a9a5](https://github.com/atomicgravity/postern/commit/d10a9a5033954bb5e6d0bff11e44516402d4cb1d))
+* **tunneling:** refresh assumed-role credentials a minute before expiry ([7ca269d](https://github.com/atomicgravity/postern/commit/7ca269d6a5728850ca20671f454b0364c4747c70))
+
+
+### Documentation
+
+* **postern-broker:** pin the account in allowed_role_arns examples ([cb33c41](https://github.com/atomicgravity/postern/commit/cb33c4101e118efe2f6ab1ab603a352c15c533e7))
+* **readme:** cover idp audience_param/auth_params, configure flags, macOS notarization ([2605477](https://github.com/atomicgravity/postern/commit/2605477a2e2c5af0213a194af580c05db6eb2d25))
+* **readme:** point cross-account tunneling at the module README ([7a860b4](https://github.com/atomicgravity/postern/commit/7a860b448bfcda854363ec73bf5ce86301b2c052))
+
+
+### Code Refactoring
+
+* **broker:** check tunnel_region for shape only ([35c3c8d](https://github.com/atomicgravity/postern/commit/35c3c8d576c42c627a494da4adb189059f7a3edd))
+
 ## [1.7.0](https://github.com/atomicgravity/postern/compare/v1.6.0...v1.7.0) (2026-10-23)
 
 
