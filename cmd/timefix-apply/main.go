@@ -164,43 +164,45 @@ func readJWS(r io.Reader) (string, error) {
 	return strings.TrimRight(string(buf), "\r\n"), nil
 }
 
-// maxCAKeys bounds the key lines read from the CA pubkey file so a corrupt
-// or hostile file can't make the verifier try signatures without limit.
+// maxCAKeys bounds the Ed25519 keys kept from the CA pubkey file so a
+// corrupt or hostile file can't make the verifier try signatures without
+// limit.
 const maxCAKeys = 16
 
 // loadCAPubKeys reads the on-device CA pubkey file (OpenSSH authorized_keys
 // format, the same file sshd reads as TrustedUserCAKeys) and returns every
-// Ed25519 key in it. Non-Ed25519 keys are skipped: sshd may trust other key
-// types from the same file, but the broker's signer is Ed25519-only. Lines
-// are parsed one at a time because ssh.ParseAuthorizedKey silently skips
-// unparseable lines, and a corrupt line here is an installer error.
+// plain Ed25519 key in it. Every other line is skipped, as sshd skips lines
+// it can't use: other key types (including sk-ssh-ed25519) may be trusted by
+// sshd, but the broker's signer is plain Ed25519 only.
 func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var keys []ed25519.PublicKey
-	keyLines := 0
-	for i, line := range strings.Split(string(contents), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		keyLines++
-		if keyLines > maxCAKeys {
-			return nil, fmt.Errorf("%s: more than %d keys", path, maxCAKeys)
-		}
-		pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+	// ParseAuthorizedKey skips comments, blanks and unparseable lines, and
+	// errors only once no key line remains.
+	for rest := contents; len(rest) > 0; {
+		var pubKey ssh.PublicKey
+		pubKey, _, _, rest, err = ssh.ParseAuthorizedKey(rest)
 		if err != nil {
-			return nil, fmt.Errorf("%s line %d: parse CA pubkey: %w", path, i+1, err)
+			break
+		}
+		if pubKey.Type() != ssh.KeyAlgoED25519 {
+			continue
 		}
 		cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)
 		if !ok {
-			return nil, fmt.Errorf("%s line %d: CA pubkey does not expose underlying crypto key", path, i+1)
+			continue
 		}
-		if edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey); ok {
-			keys = append(keys, edPub)
+		edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey)
+		if !ok {
+			continue
 		}
+		if len(keys) == maxCAKeys {
+			return nil, fmt.Errorf("%s: more than %d ed25519 keys", path, maxCAKeys)
+		}
+		keys = append(keys, edPub)
 	}
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("%s: no ed25519 CA pubkey found", path)

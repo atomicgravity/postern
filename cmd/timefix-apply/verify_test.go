@@ -243,18 +243,26 @@ func loadCAOrFatal(t *testing.T, path string) []ed25519.PublicKey {
 }
 
 // TestLoadCAPubKeys covers the CA file shapes sshd's TrustedUserCAKeys
-// accepts. Every Ed25519 line is loaded; other key types are skipped since
-// the broker's Signer is Ed25519-only (invariant N). A file left with no
-// Ed25519 key, an unparseable line, or more than maxCAKeys key lines is an
-// installer error and rejects at load (exitBadInput in run).
+// accepts. Every plain Ed25519 line is loaded; every other line (other key
+// types, sk-ssh-ed25519, certificates, garbage) is skipped, as sshd skips
+// lines it can't use, so a stray line never takes timefix down. Only a file
+// left with no Ed25519 key, or more than maxCAKeys of them, rejects at load
+// (exitBadInput in run).
 func TestLoadCAPubKeys(t *testing.T) {
 	keyA, _ := newCAKeyLine(t)
 	keyB, _ := newCAKeyLine(t)
-	var tooMany strings.Builder
-	for range maxCAKeys + 1 {
-		line, _ := newCAKeyLine(t)
-		tooMany.WriteString(line)
+	skPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
 	}
+	skLine := skEd25519Line(t, skPub)
+	var atCap, overCap strings.Builder
+	for range maxCAKeys {
+		line, _ := newCAKeyLine(t)
+		atCap.WriteString(line)
+	}
+	overCap.WriteString(atCap.String())
+	overCap.WriteString(keyA)
 
 	okTests := []struct {
 		name string
@@ -264,8 +272,20 @@ func TestLoadCAPubKeys(t *testing.T) {
 		{"single key", keyA, 1},
 		{"two keys", keyA + keyB, 2},
 		{"comments and blanks around keys", "# old CA\n" + keyA + "\n\n# new CA\n" + keyB, 2},
-		{"rsa line beside ed25519 is skipped", rsaPubLine + keyA, 1},
 		{"crlf line endings", strings.ReplaceAll(keyA+keyB, "\n", "\r\n"), 2},
+		{"no trailing newline", strings.TrimSuffix(keyA, "\n"), 1},
+		{"leading whitespace", " \t" + keyA, 1},
+		{"option-prefixed key", "cert-authority " + keyA, 1},
+		{"rsa line beside ed25519", rsaPubLine + keyA, 1},
+		{"one ed25519 beside maxCAKeys rsa lines", strings.Repeat(rsaPubLine, maxCAKeys) + keyA, 1},
+		{"maxCAKeys ed25519 keys", atCap.String(), maxCAKeys},
+		{"sk-ssh-ed25519 line beside ed25519", skLine + keyA, 1},
+		{"certificate line beside ed25519", certLine(t) + keyA, 1},
+		{"garbage line before key", "not a key at all\n" + keyA, 1},
+		{"garbage line after key", keyA + "not a key at all\n", 1},
+		{"single-token line", "garbage\n" + keyA, 1},
+		{"truncated second key", keyA + keyB[:40] + "\n", 1},
+		{"nul padding", keyA + "\x00\x00\x00\x00", 1},
 	}
 	for _, tc := range okTests {
 		t.Run("ok/"+tc.name, func(t *testing.T) {
@@ -284,8 +304,9 @@ func TestLoadCAPubKeys(t *testing.T) {
 		{"empty file", "", "no ed25519"},
 		{"only comments and blanks", "# CA goes here\n\n   \n", "no ed25519"},
 		{"only rsa", rsaPubLine, "no ed25519"},
-		{"unparseable line beside a key", keyA + "ssh-ed25519 not-base64\n", "line 2"},
-		{"more than the cap", tooMany.String(), "more than"},
+		{"only sk-ssh-ed25519", skLine, "no ed25519"},
+		{"only garbage", "not a key\ngarbage\n" + keyA[:40] + "\n", "no ed25519"},
+		{"more than maxCAKeys ed25519 keys", overCap.String(), "more than"},
 	}
 	for _, tc := range errTests {
 		t.Run("err/"+tc.name, func(t *testing.T) {
@@ -297,6 +318,91 @@ func TestLoadCAPubKeys(t *testing.T) {
 				t.Fatalf("loadCAPubKeys err = %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// skEd25519Line returns an sk-ssh-ed25519@openssh.com authorized_keys line
+// wrapping pub. It first asserts the ssh library exposes the raw ed25519 key
+// behind it, which is what makes the loader's key-type check load-bearing.
+func skEd25519Line(t *testing.T, pub ed25519.PublicKey) string {
+	t.Helper()
+	blob := ssh.Marshal(struct {
+		Name        string
+		KeyBytes    []byte
+		Application string
+	}{ssh.KeyAlgoSKED25519, pub, "ssh:"})
+	line := ssh.KeyAlgoSKED25519 + " " + base64.StdEncoding.EncodeToString(blob) + " sk@host\n"
+	parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		t.Fatalf("parse sk line: %v", err)
+	}
+	if _, ok := parsed.(ssh.CryptoPublicKey).CryptoPublicKey().(ed25519.PublicKey); !ok {
+		t.Fatalf("sk key CryptoPublicKey is %T, want ed25519.PublicKey", parsed.(ssh.CryptoPublicKey).CryptoPublicKey())
+	}
+	return line
+}
+
+// certLine returns an OpenSSH certificate line whose underlying key is
+// Ed25519, signed by a throwaway CA.
+func certLine(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatalf("ssh.NewPublicKey: %v", err)
+	}
+	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	caSigner, err := ssh.NewSignerFromKey(caPriv)
+	if err != nil {
+		t.Fatalf("ssh.NewSignerFromKey: %v", err)
+	}
+	cert := &ssh.Certificate{Key: sshPub, CertType: ssh.UserCert, ValidBefore: ssh.CertTimeInfinity}
+	if err := cert.SignCert(rand.Reader, caSigner); err != nil {
+		t.Fatalf("SignCert: %v", err)
+	}
+	return string(ssh.MarshalAuthorizedKey(cert))
+}
+
+// TestRunRejectsPayloadSignedBySkKey confirms an sk-ssh-ed25519 line in the
+// CA file is not trusted for time payloads: a payload signed with the raw
+// ed25519 key behind it exits 4 and never reaches the setter.
+func TestRunRejectsPayloadSignedBySkKey(t *testing.T) {
+	skPub, skPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	keyA, _ := newCAKeyLine(t)
+	caPath := writeCAFile(t, skEd25519Line(t, skPub)+keyA)
+	principalsPath := writePrincipalsFile(t, principalsBodyFor("SERIAL123"))
+
+	deterministicNonce := bytes.Repeat([]byte{0x5A}, 32)
+	encodedNonce := base64.RawURLEncoding.EncodeToString(deterministicNonce)
+	header := []byte(`{"alg":"EdDSA","typ":"postern-timefix+jwt"}`)
+	jws := signJWS(t, header, mustMarshal(t, validClaims(t, "SERIAL123", encodedNonce)), skPriv)
+
+	var stdout, stderr bytes.Buffer
+	setterCalled := false
+	exitCode := run(deps{
+		Stdin:          strings.NewReader(jws),
+		Stdout:         &stdout,
+		Stderr:         &stderr,
+		Random:         bytes.NewReader(deterministicNonce),
+		Now:            func() time.Time { return fixedTime },
+		PrincipalsPath: principalsPath,
+		CAPubPath:      caPath,
+		ExecSetter:     func([]string) error { setterCalled = true; return nil },
+	})
+	if exitCode != exitSignatureFailure {
+		t.Fatalf("run exit = %d (stderr=%q), want %d", exitCode, stderr.String(), exitSignatureFailure)
+	}
+	if setterCalled {
+		t.Fatal("setter exec'd on a payload signed by an sk key")
 	}
 }
 
