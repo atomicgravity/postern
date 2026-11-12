@@ -1,7 +1,7 @@
 // Command timefix-apply is the unprivileged on-device verifier. Runs as the
 // `timefix` system user under sshd's ForceCommand: generates a 32-byte
 // nonce, emits it on stdout, reads the broker's JWS from stdin, validates
-// it against the CA pubkey + local serial + in-memory nonce, and exec's
+// it against the CA pubkeys + local serial + in-memory nonce, and exec's
 // the privileged setter with the integer timestamp.
 //
 // Privilege split: this binary has zero caps; the setter at
@@ -22,7 +22,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -79,7 +78,7 @@ func main() {
 // calling os.Exit. The non-zero codes map to the package doc's failure
 // classes.
 func run(d deps) int {
-	caPubKey, err := loadCAPubKey(d.CAPubPath)
+	caPubKeys, err := loadCAPubKeys(d.CAPubPath)
 	if err != nil {
 		fmt.Fprintf(d.Stderr, "timefix-apply: load CA pubkey: %v\n", err)
 		return exitBadInput
@@ -128,7 +127,7 @@ func run(d deps) int {
 		JWS:            jws,
 		ExpectedSerial: serial,
 		ExpectedNonce:  nonce,
-		CAPublicKey:    caPubKey,
+		CAPublicKeys:   caPubKeys,
 	})
 	if result.ExitCode != exitSuccess {
 		fmt.Fprintf(d.Stderr, "timefix-apply: verify: %v\n", result.Err)
@@ -165,28 +164,48 @@ func readJWS(r io.Reader) (string, error) {
 	return strings.TrimRight(string(buf), "\r\n"), nil
 }
 
-// loadCAPubKey reads the on-device CA pubkey (OpenSSH authorized_keys
-// format, the same shape sshd's TrustedUserCAKeys reads) and returns the
-// underlying Ed25519 key. Non-Ed25519 keys reject as bad input — the
-// broker's signer is Ed25519-only.
-func loadCAPubKey(path string) (ed25519.PublicKey, error) {
+// maxCAKeys bounds the key lines read from the CA pubkey file so a corrupt
+// or hostile file can't make the verifier try signatures without limit.
+const maxCAKeys = 16
+
+// loadCAPubKeys reads the on-device CA pubkey file (OpenSSH authorized_keys
+// format, the same file sshd reads as TrustedUserCAKeys) and returns every
+// Ed25519 key in it. Non-Ed25519 keys are skipped: sshd may trust other key
+// types from the same file, but the broker's signer is Ed25519-only. Lines
+// are parsed one at a time because ssh.ParseAuthorizedKey silently skips
+// unparseable lines, and a corrupt line here is an installer error.
+func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(contents)
-	if err != nil {
-		return nil, fmt.Errorf("parse CA pubkey: %w", err)
+	var keys []ed25519.PublicKey
+	keyLines := 0
+	for i, line := range strings.Split(string(contents), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		keyLines++
+		if keyLines > maxCAKeys {
+			return nil, fmt.Errorf("%s: more than %d keys", path, maxCAKeys)
+		}
+		pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: parse CA pubkey: %w", path, i+1, err)
+		}
+		cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)
+		if !ok {
+			return nil, fmt.Errorf("%s line %d: CA pubkey does not expose underlying crypto key", path, i+1)
+		}
+		if edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey); ok {
+			keys = append(keys, edPub)
+		}
 	}
-	cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)
-	if !ok {
-		return nil, errors.New("CA pubkey does not expose underlying crypto key")
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("%s: no ed25519 CA pubkey found", path)
 	}
-	edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("CA pubkey type %T is not ed25519", cryptoPub.CryptoPublicKey())
-	}
-	return edPub, nil
+	return keys, nil
 }
 
 // readPrincipalSerial extracts the serial from the timefix

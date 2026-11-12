@@ -19,7 +19,7 @@ Postern itself doesn't write these — they're the operator's job (typically thr
 
 | Artifact | Where | What populates it |
 |---|---|---|
-| `/etc/ssh/postern_ca.pub` | Single line: `ssh-ed25519 AAAA…` | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
+| `/etc/ssh/postern_ca.pub` | One `ssh-ed25519 AAAA…` line per trusted CA (two during a CA rotation) | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
 | `timefix` system user + group | Unprivileged; **shell `/bin/sh`** (NOT `/usr/sbin/nologin`) | OS image / Yocto recipe — see install step 1 below. sshd's `ForceCommand` runs as `<user-shell> -c '/usr/sbin/timefix-apply'`; a nologin shell aborts before the verifier exec's |
 | sshd `ForceCommand` block for the `timefix` user | Cert principal `device-{serial}-timefix` + `ForceCommand /usr/sbin/timefix-apply` | See [`../sshd/README.md`](../sshd/README.md) — the drop-in there wires both the engineer (real shell) and timefix (forced command) modes |
 | `/etc/ssh/authorized_principals/timefix` | Single line: `device-{serial}-timefix` | The principals-init service (boot-time helper described in DESIGN.md §"Device identity and on-device principals"). **This file is the verifier's source of truth for the expected aud** — `cmd/timefix-apply` reads its `device-<serial>-timefix` principal here, no hardware-path dependency |

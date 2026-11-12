@@ -76,6 +76,14 @@ func mustMarshal(t *testing.T, v any) []byte {
 // tempfile is cleaned up by t.Cleanup.
 func writeAuthorizedKey(t *testing.T) (path string, privateKey ed25519.PrivateKey) {
 	t.Helper()
+	line, priv := newCAKeyLine(t)
+	return writeCAFile(t, line), priv
+}
+
+// newCAKeyLine returns a fresh Ed25519 keypair as an authorized_keys line
+// (newline-terminated) plus its private key.
+func newCAKeyLine(t *testing.T) (string, ed25519.PrivateKey) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey: %v", err)
@@ -84,13 +92,23 @@ func writeAuthorizedKey(t *testing.T) (path string, privateKey ed25519.PrivateKe
 	if err != nil {
 		t.Fatalf("ssh.NewPublicKey: %v", err)
 	}
-	dir := t.TempDir()
-	path = filepath.Join(dir, "postern_ca.pub")
-	if err := os.WriteFile(path, ssh.MarshalAuthorizedKey(sshPub), 0o600); err != nil {
+	return string(ssh.MarshalAuthorizedKey(sshPub)), priv
+}
+
+// writeCAFile writes body as a CA pubkey file in a tempdir and returns its
+// path.
+func writeCAFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "postern_ca.pub")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write pubkey: %v", err)
 	}
-	return path, priv
+	return path
 }
+
+// rsaPubLine is a structurally valid OpenSSH RSA pubkey: a key type sshd may
+// trust from the same file but the timefix verifier can't use.
+const rsaPubLine = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQwfg8s8b0NoB3a6CW6sGJBSV0gA0iJpUGEvbAd9wdEzGZSm56j1iikIuOcRMQqlSv3HOl3oVHIcvB+TYAjL4xR8gqzfA0KhrIIyZTI7lJ7w8FLh4f8KE1zRY9PdAehbtTbjE2K8K9HW/qWMcAaUDB99FwHbWQa+wpe40zPjr30tH4yKKVm3HOL5kjwBh4S2pgcybfQzaJp5jJYr5h0DcVy6n6QFqlZx7iitT44V62uJ+M0FwIozWl2tTl3STD3oqkVwTYHZF6yIaR1ihPDM6JKnsXg7d8B+yvkFNCMW6gNs+0qmDpfRO+9tCqsAUkVKXMb38FRiTtxV3oxq2dN/8d test@host\n"
 
 // TestVerifyHappyPath confirms the canonical wire format the broker emits
 // validates cleanly and the parsed timestamp matches the payload's `now`.
@@ -111,7 +129,7 @@ func TestVerifyHappyPath(t *testing.T) {
 		JWS:            jws,
 		ExpectedSerial: serial,
 		ExpectedNonce:  nonce,
-		CAPublicKey:    caPub,
+		CAPublicKeys:   caPub,
 	})
 	if result.ExitCode != exitSuccess {
 		t.Fatalf("verify exit = %d (err=%v), want 0", result.ExitCode, result.Err)
@@ -183,7 +201,7 @@ func TestVerifyFailureTable(t *testing.T) {
 				JWS:            tc.jws,
 				ExpectedSerial: serial,
 				ExpectedNonce:  nonce,
-				CAPublicKey:    caPub,
+				CAPublicKeys:   caPub,
 			})
 			if result.ExitCode != tc.want {
 				t.Fatalf("exit = %d (err=%v), want %d", result.ExitCode, result.Err, tc.want)
@@ -212,38 +230,153 @@ func corruptSignature(jws string) string {
 	return parts[0] + "." + parts[1] + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-// loadCAOrFatal exercises the production loadCAPubKey path (including
+// loadCAOrFatal exercises the production loadCAPubKeys path (including
 // the OpenSSH-format parse + Ed25519 downcast) so the test fixtures
 // match the production resolution shape byte-for-byte.
-func loadCAOrFatal(t *testing.T, path string) ed25519.PublicKey {
+func loadCAOrFatal(t *testing.T, path string) []ed25519.PublicKey {
 	t.Helper()
-	pub, err := loadCAPubKey(path)
+	pubs, err := loadCAPubKeys(path)
 	if err != nil {
-		t.Fatalf("loadCAPubKey(%s): %v", path, err)
+		t.Fatalf("loadCAPubKeys(%s): %v", path, err)
 	}
-	return pub
+	return pubs
 }
 
-// TestLoadCAPubKeyRejectsNonEd25519 is a defense-in-depth regression
-// guard for invariant N: the broker's KMSSigner is locked to Ed25519,
-// so any on-device pubkey of a different type is an installer error.
-// The verifier rejects with exitBadInput rather than progressing to
-// signature verification with a wrong-shape key.
-func TestLoadCAPubKeyRejectsNonEd25519(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.pub")
-	// Sample RSA SSH pubkey — structurally valid OpenSSH format but not
-	// Ed25519. Generating one inline keeps the test self-contained.
-	rsaPubLine := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDQwfg8s8b0NoB3a6CW6sGJBSV0gA0iJpUGEvbAd9wdEzGZSm56j1iikIuOcRMQqlSv3HOl3oVHIcvB+TYAjL4xR8gqzfA0KhrIIyZTI7lJ7w8FLh4f8KE1zRY9PdAehbtTbjE2K8K9HW/qWMcAaUDB99FwHbWQa+wpe40zPjr30tH4yKKVm3HOL5kjwBh4S2pgcybfQzaJp5jJYr5h0DcVy6n6QFqlZx7iitT44V62uJ+M0FwIozWl2tTl3STD3oqkVwTYHZF6yIaR1ihPDM6JKnsXg7d8B+yvkFNCMW6gNs+0qmDpfRO+9tCqsAUkVKXMb38FRiTtxV3oxq2dN/8d test@host\n"
-	if err := os.WriteFile(path, []byte(rsaPubLine), 0o600); err != nil {
-		t.Fatalf("write bad pubkey: %v", err)
+// TestLoadCAPubKeys covers the CA file shapes sshd's TrustedUserCAKeys
+// accepts. Every Ed25519 line is loaded; other key types are skipped since
+// the broker's Signer is Ed25519-only (invariant N). A file left with no
+// Ed25519 key, an unparseable line, or more than maxCAKeys key lines is an
+// installer error and rejects at load (exitBadInput in run).
+func TestLoadCAPubKeys(t *testing.T) {
+	keyA, _ := newCAKeyLine(t)
+	keyB, _ := newCAKeyLine(t)
+	var tooMany strings.Builder
+	for range maxCAKeys + 1 {
+		line, _ := newCAKeyLine(t)
+		tooMany.WriteString(line)
 	}
-	_, err := loadCAPubKey(path)
-	if err == nil {
-		t.Fatal("loadCAPubKey accepted non-Ed25519 key; want error")
+
+	okTests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"single key", keyA, 1},
+		{"two keys", keyA + keyB, 2},
+		{"comments and blanks around keys", "# old CA\n" + keyA + "\n\n# new CA\n" + keyB, 2},
+		{"rsa line beside ed25519 is skipped", rsaPubLine + keyA, 1},
+		{"crlf line endings", strings.ReplaceAll(keyA+keyB, "\n", "\r\n"), 2},
 	}
-	if !strings.Contains(err.Error(), "ed25519") {
-		t.Fatalf("loadCAPubKey err = %v, want one mentioning ed25519", err)
+	for _, tc := range okTests {
+		t.Run("ok/"+tc.name, func(t *testing.T) {
+			keys := loadCAOrFatal(t, writeCAFile(t, tc.body))
+			if len(keys) != tc.want {
+				t.Fatalf("loadCAPubKeys returned %d keys, want %d", len(keys), tc.want)
+			}
+		})
+	}
+
+	errTests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"empty file", "", "no ed25519"},
+		{"only comments and blanks", "# CA goes here\n\n   \n", "no ed25519"},
+		{"only rsa", rsaPubLine, "no ed25519"},
+		{"unparseable line beside a key", keyA + "ssh-ed25519 not-base64\n", "line 2"},
+		{"more than the cap", tooMany.String(), "more than"},
+	}
+	for _, tc := range errTests {
+		t.Run("err/"+tc.name, func(t *testing.T) {
+			_, err := loadCAPubKeys(writeCAFile(t, tc.body))
+			if err == nil {
+				t.Fatalf("loadCAPubKeys accepted %q; want error", tc.body)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("loadCAPubKeys err = %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestVerifyAcceptsAnyCAKeyInFile models a CA file listing two brokers'
+// keys: a payload signed by either verifies, and one signed by a key not
+// in the file fails the signature step with the same exit code and
+// message shape as a single-key file.
+func TestVerifyAcceptsAnyCAKeyInFile(t *testing.T) {
+	lineA, privA := newCAKeyLine(t)
+	lineB, privB := newCAKeyLine(t)
+	_, privOther := newCAKeyLine(t)
+	caPubs := loadCAOrFatal(t, writeCAFile(t, lineA+lineB))
+
+	const serial = "SERIAL123"
+	const nonce = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	header := []byte(`{"alg":"EdDSA","typ":"postern-timefix+jwt"}`)
+	payload := mustMarshal(t, validClaims(t, serial, nonce))
+
+	tests := []struct {
+		name   string
+		signer ed25519.PrivateKey
+		want   int
+	}{
+		{"first key", privA, exitSuccess},
+		{"second key", privB, exitSuccess},
+		{"key not in file", privOther, exitSignatureFailure},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := verify(verifyParams{
+				JWS:            signJWS(t, header, payload, tc.signer),
+				ExpectedSerial: serial,
+				ExpectedNonce:  nonce,
+				CAPublicKeys:   caPubs,
+			})
+			if result.ExitCode != tc.want {
+				t.Fatalf("exit = %d (err=%v), want %d", result.ExitCode, result.Err, tc.want)
+			}
+			if tc.want == exitSignatureFailure && !strings.HasPrefix(result.Err.Error(), "verify signature: ") {
+				t.Fatalf("err = %v, want prefix %q", result.Err, "verify signature: ")
+			}
+		})
+	}
+}
+
+// TestRunSignatureFromUnlistedCAExits4 drives run() with a two-key CA file
+// and a payload signed by a third key: exit 4 and the `verify signature:`
+// stderr line on-device log analysis matches on.
+func TestRunSignatureFromUnlistedCAExits4(t *testing.T) {
+	lineA, _ := newCAKeyLine(t)
+	lineB, _ := newCAKeyLine(t)
+	_, privOther := newCAKeyLine(t)
+	caPath := writeCAFile(t, lineA+lineB)
+	principalsPath := writePrincipalsFile(t, principalsBodyFor("SERIAL123"))
+
+	deterministicNonce := bytes.Repeat([]byte{0xEF}, 32)
+	encodedNonce := base64.RawURLEncoding.EncodeToString(deterministicNonce)
+	header := []byte(`{"alg":"EdDSA","typ":"postern-timefix+jwt"}`)
+	jws := signJWS(t, header, mustMarshal(t, validClaims(t, "SERIAL123", encodedNonce)), privOther)
+
+	var stdout, stderr bytes.Buffer
+	setterCalled := false
+	exitCode := run(deps{
+		Stdin:          strings.NewReader(jws),
+		Stdout:         &stdout,
+		Stderr:         &stderr,
+		Random:         bytes.NewReader(deterministicNonce),
+		Now:            func() time.Time { return fixedTime },
+		PrincipalsPath: principalsPath,
+		CAPubPath:      caPath,
+		ExecSetter:     func([]string) error { setterCalled = true; return nil },
+	})
+	if exitCode != exitSignatureFailure {
+		t.Fatalf("run exit = %d (stderr=%q), want %d", exitCode, stderr.String(), exitSignatureFailure)
+	}
+	if !strings.Contains(stderr.String(), "timefix-apply: verify: verify signature: ") {
+		t.Fatalf("stderr = %q, want the verify signature line", stderr.String())
+	}
+	if setterCalled {
+		t.Fatal("setter exec'd on a signature failure")
 	}
 }
 
