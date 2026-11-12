@@ -171,9 +171,9 @@ const maxCAKeys = 16
 
 // loadCAPubKeys reads the on-device CA pubkey file (OpenSSH authorized_keys
 // format, the same file sshd reads as TrustedUserCAKeys) and returns every
-// plain Ed25519 key in it. Every other line is skipped, as sshd skips lines
-// it can't use: other key types (including sk-ssh-ed25519) may be trusted by
-// sshd, but the broker's signer is plain Ed25519 only.
+// plain Ed25519 key in it. Every other line is skipped: other key types
+// (including sk-ssh-ed25519) may be trusted by sshd, but the broker's signer
+// is plain Ed25519 only, and a stray line must not take timefix down.
 func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {

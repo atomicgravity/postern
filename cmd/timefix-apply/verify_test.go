@@ -244,8 +244,8 @@ func loadCAOrFatal(t *testing.T, path string) []ed25519.PublicKey {
 
 // TestLoadCAPubKeys covers the CA file shapes sshd's TrustedUserCAKeys
 // accepts. Every plain Ed25519 line is loaded; every other line (other key
-// types, sk-ssh-ed25519, certificates, garbage) is skipped, as sshd skips
-// lines it can't use, so a stray line never takes timefix down. Only a file
+// types, sk-ssh-ed25519, certificates, garbage) is skipped, so a stray line
+// never takes timefix down. Only a file
 // left with no Ed25519 key, or more than maxCAKeys of them, rejects at load
 // (exitBadInput in run).
 func TestLoadCAPubKeys(t *testing.T) {
