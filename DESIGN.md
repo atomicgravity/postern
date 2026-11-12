@@ -123,7 +123,7 @@ Three signing roles, all served by **one CA private key** (the **Postern SSH CA*
 All three roles use the same private key (held by the configured Signer; KMS-style external HSM is the recommended deployment). The on-device public key (`/etc/ssh/postern_ca.pub`) covers all three:
 
 - For roles (1) and (2), sshd uses `TrustedUserCAKeys /etc/ssh/postern_ca.pub`.
-- For role (3), `timefix-apply` reads the same file to verify the time payload signature. Like sshd, it accepts a signature from any key listed there; it uses only the Ed25519 lines, since the Signer is Ed25519-only.
+- For role (3), `timefix-apply` reads the same file to verify the time payload signature. It accepts a signature from any Ed25519 key listed there; other lines are ignored, since the Signer is Ed25519-only. It does not consult sshd's `RevokedKeys`, so a CA key is withdrawn from timefix by removing its line from the file.
 
 ### Why one CA and not three
 

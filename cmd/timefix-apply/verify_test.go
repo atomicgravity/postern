@@ -242,12 +242,11 @@ func loadCAOrFatal(t *testing.T, path string) []ed25519.PublicKey {
 	return pubs
 }
 
-// TestLoadCAPubKeys covers the CA file shapes sshd's TrustedUserCAKeys
-// accepts. Every plain Ed25519 line is loaded; every other line (other key
-// types, sk-ssh-ed25519, certificates, garbage) is skipped, so a stray line
-// never takes timefix down. Only a file
-// left with no Ed25519 key, or more than maxCAKeys of them, rejects at load
-// (exitBadInput in run).
+// TestLoadCAPubKeys covers the shapes a CA pubkey file can take. Every plain
+// Ed25519 line is loaded, however many there are; every other line (other
+// key types, sk-ssh-ed25519, certificates, garbage) is skipped, so a stray
+// line never takes timefix down. Only a file left with no Ed25519 key
+// rejects at load (exitBadInput in run).
 func TestLoadCAPubKeys(t *testing.T) {
 	keyA, _ := newCAKeyLine(t)
 	keyB, _ := newCAKeyLine(t)
@@ -256,13 +255,11 @@ func TestLoadCAPubKeys(t *testing.T) {
 		t.Fatalf("ed25519.GenerateKey: %v", err)
 	}
 	skLine := skEd25519Line(t, skPub)
-	var atCap, overCap strings.Builder
-	for range maxCAKeys {
+	var manyKeys strings.Builder
+	for range 40 {
 		line, _ := newCAKeyLine(t)
-		atCap.WriteString(line)
+		manyKeys.WriteString(line)
 	}
-	overCap.WriteString(atCap.String())
-	overCap.WriteString(keyA)
 
 	okTests := []struct {
 		name string
@@ -277,8 +274,8 @@ func TestLoadCAPubKeys(t *testing.T) {
 		{"leading whitespace", " \t" + keyA, 1},
 		{"option-prefixed key", "cert-authority " + keyA, 1},
 		{"rsa line beside ed25519", rsaPubLine + keyA, 1},
-		{"one ed25519 beside maxCAKeys rsa lines", strings.Repeat(rsaPubLine, maxCAKeys) + keyA, 1},
-		{"maxCAKeys ed25519 keys", atCap.String(), maxCAKeys},
+		{"one ed25519 beside many rsa lines", strings.Repeat(rsaPubLine, 40) + keyA, 1},
+		{"many ed25519 keys", manyKeys.String(), 40},
 		{"sk-ssh-ed25519 line beside ed25519", skLine + keyA, 1},
 		{"certificate line beside ed25519", certLine(t) + keyA, 1},
 		{"garbage line before key", "not a key at all\n" + keyA, 1},
@@ -306,7 +303,6 @@ func TestLoadCAPubKeys(t *testing.T) {
 		{"only rsa", rsaPubLine, "no ed25519"},
 		{"only sk-ssh-ed25519", skLine, "no ed25519"},
 		{"only garbage", "not a key\ngarbage\n" + keyA[:40] + "\n", "no ed25519"},
-		{"more than maxCAKeys ed25519 keys", overCap.String(), "more than"},
 	}
 	for _, tc := range errTests {
 		t.Run("err/"+tc.name, func(t *testing.T) {

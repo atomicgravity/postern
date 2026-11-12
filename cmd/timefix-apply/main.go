@@ -164,11 +164,6 @@ func readJWS(r io.Reader) (string, error) {
 	return strings.TrimRight(string(buf), "\r\n"), nil
 }
 
-// maxCAKeys bounds the Ed25519 keys kept from the CA pubkey file so a
-// corrupt or hostile file can't make the verifier try signatures without
-// limit.
-const maxCAKeys = 16
-
 // loadCAPubKeys reads the on-device CA pubkey file (OpenSSH authorized_keys
 // format, the same file sshd reads as TrustedUserCAKeys) and returns every
 // plain Ed25519 key in it. Every other line is skipped: other key types
@@ -198,9 +193,6 @@ func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 		edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey)
 		if !ok {
 			continue
-		}
-		if len(keys) == maxCAKeys {
-			return nil, fmt.Errorf("%s: more than %d ed25519 keys", path, maxCAKeys)
 		}
 		keys = append(keys, edPub)
 	}
