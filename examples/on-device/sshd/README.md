@@ -19,7 +19,7 @@ Postern itself doesn't write these — they're the operator's job (typically thr
 
 | Artifact | Where | What populates it |
 |---|---|---|
-| `/etc/ssh/postern_ca.pub` | Single line: `ssh-ed25519 AAAA…` | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
+| `/etc/ssh/postern_ca.pub` | One `ssh-ed25519 AAAA…` line per trusted CA (two during a CA rotation) | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
 | `engineer` system user | Real interactive shell, no sudo unless your access model needs it | OS image / Yocto recipe |
 | `timefix` system user | Unprivileged; **shell `/bin/sh`** (NOT `/usr/sbin/nologin`). sshd runs the `ForceCommand` via the user's login shell (`shell -c '/usr/sbin/timefix-apply'`), so a `nologin` shell prints "This account is currently not available." and exits before the verifier ever runs. The forced command + the `AuthorizedPrincipalsFile` gate keep the surface tight — the timefix user only ever exec's the verifier. | OS image / Yocto recipe; see [`../timefix/README.md`](../timefix/README.md) install step 1 |
 | `/etc/ssh/authorized_principals/engineer` | Single line: `device-{serial}-operator` | The principals-init service (boot-time helper described in DESIGN.md §"Device identity and on-device principals") |

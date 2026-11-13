@@ -8,7 +8,7 @@ The full design rationale is in [`DESIGN.md`](../../../DESIGN.md) §"The on-devi
 
 Two Linux binaries built from this repo's `cmd/` tree:
 
-- **`timefix-apply`** — the unprivileged verifier. Runs as the `timefix` system user under sshd's `ForceCommand` for that user, validates an incoming JWS Compact against the on-device CA pubkey + hardware serial + an in-memory nonce + a sanity time range, then exec's `timefix-set-clock` with the validated unix timestamp. Has zero Linux capabilities and no SUID bit. A bug here gives an attacker at most a `timefix`-user shell that can do nothing reachable.
+- **`timefix-apply`** — the unprivileged verifier. Runs as the `timefix` system user under sshd's `ForceCommand` for that user, validates an incoming JWS Compact against the on-device CA pubkeys (any Ed25519 key in `/etc/ssh/postern_ca.pub`) + hardware serial + an in-memory nonce + a sanity time range, then exec's `timefix-set-clock` with the validated unix timestamp. Has zero Linux capabilities and no SUID bit. A bug here gives an attacker at most a `timefix`-user shell that can do nothing reachable.
 - **`timefix-set-clock`** — the privileged setter. Runs as the same `timefix` user but carries `cap_sys_time+ep` via Linux file capabilities applied by this install recipe. Calls `clock_settime(CLOCK_REALTIME, ...)` on a single positional integer arg, then best-effort writes the RTC via `RTC_SET_TIME` ioctl on `/dev/rtc0`. No stdin read, no env-derived input, no file reads except the syscall/ioctl targets, no flags.
 
 The two binaries ride upstream Postern releases. Download from this repo's GitHub releases for your device architecture (`linux/amd64` or `linux/arm64`) — they have no runtime dependencies beyond glibc / musl.
@@ -19,7 +19,7 @@ Postern itself doesn't write these — they're the operator's job (typically thr
 
 | Artifact | Where | What populates it |
 |---|---|---|
-| `/etc/ssh/postern_ca.pub` | Single line: `ssh-ed25519 AAAA…` | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
+| `/etc/ssh/postern_ca.pub` | One `ssh-ed25519 AAAA…` line per trusted CA (two during a CA rotation) | Operator extracts from the broker's KMS key (see [terraform/postern-broker/README.md](../../../terraform/postern-broker/README.md) §"Extracting the SSH CA public key for devices"); same file is shipped to every device in the fleet via OS update or first-boot |
 | `timefix` system user + group | Unprivileged; **shell `/bin/sh`** (NOT `/usr/sbin/nologin`) | OS image / Yocto recipe — see install step 1 below. sshd's `ForceCommand` runs as `<user-shell> -c '/usr/sbin/timefix-apply'`; a nologin shell aborts before the verifier exec's |
 | sshd `ForceCommand` block for the `timefix` user | Cert principal `device-{serial}-timefix` + `ForceCommand /usr/sbin/timefix-apply` | See [`../sshd/README.md`](../sshd/README.md) — the drop-in there wires both the engineer (real shell) and timefix (forced command) modes |
 | `/etc/ssh/authorized_principals/timefix` | Single line: `device-{serial}-timefix` | The principals-init service (boot-time helper described in DESIGN.md §"Device identity and on-device principals"). **This file is the verifier's source of truth for the expected aud** — `cmd/timefix-apply` reads its `device-<serial>-timefix` principal here, no hardware-path dependency |

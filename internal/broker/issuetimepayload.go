@@ -193,7 +193,8 @@ func (i *TimePayloadIssuer) IssueTimePayload(ctx context.Context, request TimePa
 	// OpaqueSigner adapts CertSigner.SignTimePayload to go-jose, capturing
 	// the per-request ctx so KMS calls inherit cancellation. WithType pins
 	// `typ`; SigningKey pins `alg=EdDSA`. Public() returns nil so the
-	// library omits kid/jwk — v1 has one CA pubkey installed on device.
+	// library omits kid/jwk — the device verifier tries every Ed25519 key
+	// in its CA file, so it needs no key hint.
 	joseSigner, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.EdDSA, Key: timePayloadOpaqueSigner{ctx: ctx, signer: i.signer}},
 		(&jose.SignerOptions{}).WithType(timePayloadJWSType),

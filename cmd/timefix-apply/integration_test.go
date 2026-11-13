@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"io"
 	"strconv"
@@ -31,12 +32,34 @@ import (
 // are unit-tested in cmd/timefix-set-clock and aren't relevant to the
 // "broker + verifier + CLI plumbing speak the same wire format" assertion
 // this integration test owns.
+//
+// The device's CA file lists two keys, as during a CA rotation or with two
+// brokers sharing a fleet; the broker signs with each in turn.
 func TestIntegrationBrokerMintsTimePayloadVerifierAccepts(t *testing.T) {
-	// Step 1: build a CA keypair the broker signs with AND the verifier
-	// trusts as its on-device CA pubkey. Same key on both ends models the
-	// production flow (broker signs with the KMS key whose pubkey is
-	// installed at /etc/ssh/postern_ca.pub on every device).
-	caPubPath, caPriv := writeAuthorizedKey(t)
+	lineA, privA := newCAKeyLine(t)
+	lineB, privB := newCAKeyLine(t)
+	caPubPath := writeCAFile(t, lineA+lineB)
+
+	for _, tc := range []struct {
+		name   string
+		caPriv ed25519.PrivateKey
+	}{
+		{"first key in CA file", privA},
+		{"second key in CA file", privB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runBrokerToVerifier(t, caPubPath, tc.caPriv)
+		})
+	}
+}
+
+// runBrokerToVerifier runs one broker-signs, verifier-accepts round trip with
+// the broker signing as caPriv against the CA file at caPubPath.
+func runBrokerToVerifier(t *testing.T, caPubPath string, caPriv ed25519.PrivateKey) {
+	t.Helper()
+	// Step 1: the broker signs with caPriv; the verifier trusts the keys
+	// in caPubPath (production: the KMS key whose pubkey is installed at
+	// /etc/ssh/postern_ca.pub on every device).
 	sshSigner, err := ssh.NewSignerFromKey(caPriv)
 	if err != nil {
 		t.Fatalf("ssh.NewSignerFromKey: %v", err)
@@ -210,7 +233,6 @@ func TestIntegrationBrokerMintsTimePayloadVerifierAccepts(t *testing.T) {
 	if delta := gotTS - wantTS; delta < -1 || delta > 1 {
 		t.Fatalf("setter timestamp = %d, want within 1s of broker now %d (delta %d)", gotTS, wantTS, delta)
 	}
-
 }
 
 // Integration-test broker fakes — same shape the cliapp tests use but

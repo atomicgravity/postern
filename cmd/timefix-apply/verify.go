@@ -64,7 +64,7 @@ type verifyParams struct {
 	JWS            string
 	ExpectedSerial string
 	ExpectedNonce  string
-	CAPublicKey    ed25519.PublicKey
+	CAPublicKeys   []ed25519.PublicKey
 }
 
 // verifyResult carries the validated timestamp and the exit code. Err is
@@ -80,7 +80,8 @@ type verifyResult struct {
 // Order is load-bearing. The alg pin (via go-jose's accepted-algs list) runs
 // before any structural inspection. typ check follows parse. Signature
 // verify runs before any claim-content check — payload bytes are
-// unauthenticated until verify succeeds.
+// unauthenticated until verify succeeds. The signature is accepted from any
+// of CAPublicKeys, as sshd accepts a cert from any TrustedUserCAKeys entry.
 func verify(params verifyParams) verifyResult {
 	if len(params.JWS) == 0 {
 		return verifyResult{ExitCode: exitBadInput, Err: errors.New("empty JWS")}
@@ -88,8 +89,13 @@ func verify(params verifyParams) verifyResult {
 	if len(params.JWS) > MaxJWSBytes {
 		return verifyResult{ExitCode: exitBadInput, Err: fmt.Errorf("JWS exceeds %d byte cap", MaxJWSBytes)}
 	}
-	if len(params.CAPublicKey) != ed25519.PublicKeySize {
-		return verifyResult{ExitCode: exitSignatureFailure, Err: fmt.Errorf("CA public key wrong size: %d", len(params.CAPublicKey))}
+	if len(params.CAPublicKeys) == 0 {
+		return verifyResult{ExitCode: exitSignatureFailure, Err: errors.New("no CA public keys")}
+	}
+	for i, key := range params.CAPublicKeys {
+		if len(key) != ed25519.PublicKeySize {
+			return verifyResult{ExitCode: exitSignatureFailure, Err: fmt.Errorf("CA public key %d wrong size: %d", i, len(key))}
+		}
 	}
 
 	// EdDSA-only accepted-algorithm list is the alg-confusion defense:
@@ -112,7 +118,13 @@ func verify(params verifyParams) verifyResult {
 		return verifyResult{ExitCode: exitAlgTypMismatch, Err: fmt.Errorf("header typ = %q, want %q", typ, expectedTyp)}
 	}
 
-	payloadBytes, err := parsed.Verify(params.CAPublicKey)
+	var payloadBytes []byte
+	for _, key := range params.CAPublicKeys {
+		payloadBytes, err = parsed.Verify(key)
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return verifyResult{ExitCode: exitSignatureFailure, Err: fmt.Errorf("verify signature: %w", err)}
 	}

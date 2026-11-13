@@ -123,7 +123,7 @@ Three signing roles, all served by **one CA private key** (the **Postern SSH CA*
 All three roles use the same private key (held by the configured Signer; KMS-style external HSM is the recommended deployment). The on-device public key (`/etc/ssh/postern_ca.pub`) covers all three:
 
 - For roles (1) and (2), sshd uses `TrustedUserCAKeys /etc/ssh/postern_ca.pub`.
-- For role (3), `timefix-apply` reads the same file to verify the time payload signature.
+- For role (3), `timefix-apply` reads the same file to verify the time payload signature. It accepts a signature from any Ed25519 key listed there; other lines are ignored, since the Signer is Ed25519-only. It does not consult sshd's `RevokedKeys`, so a CA key is withdrawn from timefix by removing its line from the file.
 
 ### Why one CA and not three
 
@@ -209,7 +209,7 @@ The forced command's verifier rejects unless **all** of the following hold:
 
 1. The header's `alg` is exactly `EdDSA`.
 2. The header's `typ` is exactly `postern-timefix+jwt`.
-3. The signature verifies against the on-device CA pubkey at `/etc/ssh/postern_ca.pub`.
+3. The signature verifies against one of the Ed25519 CA pubkeys in `/etc/ssh/postern_ca.pub`.
 4. `aud` equals this device's timefix principal (`device-{serial}-timefix`).
 5. `device_serial` equals this device's serial.
 6. `nonce` equals the **in-memory nonce this process generated at startup**. Anything else is a replay attempt — reject.
@@ -390,7 +390,7 @@ Runs as user `timefix` with **no special privileges, no SUID, no capabilities**.
 5. **Verify** the JWS:
    - `header.alg == EdDSA` (no fallback)
    - `header.typ == postern-timefix+jwt`
-   - Signature verifies against `/etc/ssh/postern_ca.pub`
+   - Signature verifies against any Ed25519 key in `/etc/ssh/postern_ca.pub`
 6. **Validate claims:**
    - `aud == device-{serial}-timefix`
    - `device_serial == ` running device's serial
@@ -849,7 +849,7 @@ For compliance contexts that require session-content recording (input/output cap
 For routine (non-incident) rotation:
 
 - New CA keypair generated in the Signer.
-- New pubkey shipped via OS update. Devices accept *both* old and new during a transition window — `TrustedUserCAKeys` can list multiple keys.
+- New pubkey shipped via OS update. Devices accept *both* old and new during a transition window — `TrustedUserCAKeys` can list multiple keys, and `timefix-apply` accepts a time payload signed by any of them.
 - Broker switches to issuing certs against the new key.
 - After all fielded devices are verified to have the new pubkey, old key is disabled and removed from on-device config (next OS update).
 
