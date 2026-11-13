@@ -168,7 +168,9 @@ func readJWS(r io.Reader) (string, error) {
 // format, the same file sshd reads as TrustedUserCAKeys) and returns every
 // plain Ed25519 key in it. Every other line is skipped: other key types
 // (including sk-ssh-ed25519) may be trusted by sshd, but the broker's signer
-// is plain Ed25519 only, and a stray line must not take timefix down.
+// is plain Ed25519 only, and a stray line must not take timefix down. Lines
+// prefixed with authorized_keys options are skipped too, since sshd reads
+// TrustedUserCAKeys as bare keys and would not trust them.
 func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
@@ -179,11 +181,12 @@ func loadCAPubKeys(path string) ([]ed25519.PublicKey, error) {
 	// errors only once no key line remains.
 	for rest := contents; len(rest) > 0; {
 		var pubKey ssh.PublicKey
-		pubKey, _, _, rest, err = ssh.ParseAuthorizedKey(rest)
+		var options []string
+		pubKey, _, options, rest, err = ssh.ParseAuthorizedKey(rest)
 		if err != nil {
 			break
 		}
-		if pubKey.Type() != ssh.KeyAlgoED25519 {
+		if len(options) > 0 || pubKey.Type() != ssh.KeyAlgoED25519 {
 			continue
 		}
 		cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)

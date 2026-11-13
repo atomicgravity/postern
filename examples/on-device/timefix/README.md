@@ -8,7 +8,7 @@ The full design rationale is in [`DESIGN.md`](../../../DESIGN.md) §"The on-devi
 
 Two Linux binaries built from this repo's `cmd/` tree:
 
-- **`timefix-apply`** — the unprivileged verifier. Runs as the `timefix` system user under sshd's `ForceCommand` for that user, validates an incoming JWS Compact against the on-device CA pubkey + hardware serial + an in-memory nonce + a sanity time range, then exec's `timefix-set-clock` with the validated unix timestamp. Has zero Linux capabilities and no SUID bit. A bug here gives an attacker at most a `timefix`-user shell that can do nothing reachable.
+- **`timefix-apply`** — the unprivileged verifier. Runs as the `timefix` system user under sshd's `ForceCommand` for that user, validates an incoming JWS Compact against the on-device CA pubkeys (any Ed25519 key in `/etc/ssh/postern_ca.pub`) + hardware serial + an in-memory nonce + a sanity time range, then exec's `timefix-set-clock` with the validated unix timestamp. Has zero Linux capabilities and no SUID bit. A bug here gives an attacker at most a `timefix`-user shell that can do nothing reachable.
 - **`timefix-set-clock`** — the privileged setter. Runs as the same `timefix` user but carries `cap_sys_time+ep` via Linux file capabilities applied by this install recipe. Calls `clock_settime(CLOCK_REALTIME, ...)` on a single positional integer arg, then best-effort writes the RTC via `RTC_SET_TIME` ioctl on `/dev/rtc0`. No stdin read, no env-derived input, no file reads except the syscall/ioctl targets, no flags.
 
 The two binaries ride upstream Postern releases. Download from this repo's GitHub releases for your device architecture (`linux/amd64` or `linux/arm64`) — they have no runtime dependencies beyond glibc / musl.
