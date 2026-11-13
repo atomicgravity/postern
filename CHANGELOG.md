@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.8.1](https://github.com/atomicgravity/postern/compare/v1.8.0...v1.8.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **timefix-apply:** drop the ca key cap; docs: name the ca file and the krl gap ([3e4a73c](https://github.com/atomicgravity/postern/commit/3e4a73cb05747f03fb092b65ef34b9c231d43508))
+* **timefix-apply:** skip option-prefixed ca lines; trim loader tests ([89c7d69](https://github.com/atomicgravity/postern/commit/89c7d69669e2f4a7325d06bb38f36796fda82dd1))
+* **timefix-apply:** skip unusable ca lines and count only ed25519 keys ([b5eae8a](https://github.com/atomicgravity/postern/commit/b5eae8ac2d5c6842322dba5aa8e79123ba6e1490))
+* **timefix-apply:** verify time payloads against every ed25519 ca key in the file ([071b5c7](https://github.com/atomicgravity/postern/commit/071b5c7d95b6e753d0035bdde1895a37b4a7a498))
+* **timefix-apply:** verify time payloads against every ed25519 ca key in the file ([57c80a9](https://github.com/atomicgravity/postern/commit/57c80a9063f2e89ac58ee22eabf963c2eb6b4236))
+
+
+### Documentation
+
+* **timefix-apply:** say why unusable ca lines are skipped ([d0c755e](https://github.com/atomicgravity/postern/commit/d0c755e2402723fff4198989f04c3e2dea785d68))
+
 ## [1.8.0](https://github.com/atomicgravity/postern/compare/v1.7.0...v1.8.0) (2026-10-29)
 
 
